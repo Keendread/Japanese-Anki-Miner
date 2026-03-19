@@ -1,0 +1,1 @@
+Step by step guide for setting up the application

@@ -1,0 +1,76 @@
+# ============================================================
+# Japanese Anki Miner (JAM) — requirements.txt
+# ============================================================
+# Install with: pip install -r requirements.txt
+#
+# Prerequisites (NOT pip-installable, install manually):
+#   - Anki desktop app:       https://apps.ankiweb.net
+#   - AnkiConnect add-on:     https://ankiweb.net/shared/info/2055492159
+#   - VOICEVOX:               https://voicevox.hiroshiba.jp
+#   - Local Audio Server:     Anki add-on 1045800357
+# ============================================================
+ 
+# ---------- SCREEN CAPTURE ----------
+mss                      # Fast cross-platform screen capture
+Pillow                   # Image processing, cropping, format conversion
+ 
+# ---------- GLOBAL HOTKEYS & CURSOR ----------
+pynput                   # Global hotkey listener (works outside focused window)
+pyautogui                # Mouse cursor position fallback
+pywin32                  # Windows API — precise cursor position, window info
+ 
+# ---------- OCR ----------
+manga-ocr                # Japanese OCR via Vision Transformer (pulls torch + transformers)
+ 
+# ---------- JAPANESE NLP ----------
+sudachipy                # Japanese morphological analyzer
+sudachidict-full         # Full SudachiPy dictionary (covers compounds + proper nouns)
+                         # Install separately: pip install sudachidict-full
+ 
+# ---------- DICTIONARY ----------
+lxml                     # Fast XML parser for JMdict
+# JMdict XML file itself is NOT a pip package.
+# Download from: https://www.edrdg.org/jmdict/edict_doc.html
+# Place at: data/JMdict_e.xml
+ 
+# ---------- AUDIO ----------
+requests                 # HTTP calls to VOICEVOX API and Yomichan audio server
+pydub                    # Audio file conversion (wav → mp3 if needed)
+ 
+# ---------- IMAGE SOURCING ----------
+requests                 # Already listed above — used for Irasutoya, Wikimedia, Pexels
+beautifulsoup4           # HTML parsing fallback for Irasutoya feed
+ 
+# ---------- SYSTEM TRAY UI ----------
+pystray                  # System tray icon and right-click menu
+Pillow                   # Already listed — also used for tray icon rendering
+ 
+# ---------- REGION SELECT OVERLAY ----------
+# tkinter is built into Python's standard library — no pip install needed
+ 
+# ---------- TOAST NOTIFICATIONS ----------
+plyer                    # Cross-platform desktop notifications / toast popups
+ 
+# ---------- DATABASE ----------
+# sqlite3 is built into Python's standard library — no pip install needed
+ 
+# ---------- WORD FREQUENCY / JLPT CLASSIFICATION ----------
+# Frequency list lookup is handled via a local JSON file (no extra library needed)
+# If you use rapidfuzz for fuzzy word matching against the frequency list:
+rapidfuzz                # Fast fuzzy string matching (optional, for frequency lookup)
+ 
+# ---------- CONCURRENCY (parallel audio + image fetch) ----------
+# concurrent.futures is built into Python's standard library — no pip install needed
+ 
+# ---------- PACKAGING ----------
+pyinstaller              # Packages the app into a single .exe for distribution
+ 
+# ---------- TESTING ----------
+pytest                   # Test runner
+pytest-cov               # Coverage reporting
+ 
+# ---------- EVALUATION (benchmarking scripts only) ----------
+numpy                    # Numerical ops for CER/WER calculation
+pandas                   # Tabular results logging
+editdistance             # Fast Levenshtein distance for CER/WER computation
+matplotlib               # Plotting latency results and benchmark graphs

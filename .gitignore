@@ -1,0 +1,134 @@
+# ============================================================
+# Japanese Anki Miner (JAM) — .gitignore
+# ============================================================
+ 
+# ---------- PYTHON ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+ 
+# ---------- VIRTUAL ENVIRONMENT ----------
+venv/
+env/
+ENV/
+.venv/
+.env/
+ 
+# ---------- DISTRIBUTION / PACKAGING ----------
+build/
+dist/
+*.egg-info/
+*.egg
+MANIFEST
+.eggs/
+ 
+# ---------- PYINSTALLER ----------
+# PyInstaller output — the .exe is built, not committed
+*.spec
+dist/
+build/
+ 
+# ---------- DATA FILES (too large for git) ----------
+# JMdict dictionary (~70MB XML)
+data/JMdict.xml
+data/JMdict_e.xml
+data/JMdict_e_examp.xml
+ 
+# Frequency lists (can be large)
+data/jpdb_frequency_list.json
+data/*.csv
+ 
+# SudachiDict (downloaded at runtime by SudachiPy)
+sudachidict*/
+*.dic
+ 
+# MangaOCR model weights (downloaded at first run via HuggingFace)
+# These live in HuggingFace cache, not the repo
+.cache/
+~/.cache/huggingface/
+ 
+# Irasutoya local JSON index (downloadable, not committed)
+data/irasutoya_index.json
+ 
+# UD Japanese GSD corpus (used for evaluation only)
+data/ud-japanese-gsd/
+data/*.conllu
+ 
+# ICDAR / Manga109 evaluation datasets (large, external)
+data/icdar/
+data/manga109/
+data/eval_screenshots/
+ 
+# ---------- DATABASE ----------
+# SQLite database is per-user, never committed
+*.db
+*.sqlite
+*.sqlite3
+jam_history.db
+ 
+# ---------- MEDIA / GENERATED FILES ----------
+# Temporary captures and generated audio/images
+*.webp
+*.wav
+*.mp3
+captured_*.png
+jam_image_*.png
+jam_audio_*.mp3
+jam_audio_*.wav
+ 
+# ---------- API KEYS & SECRETS ----------
+.env
+.env.local
+.env.*.local
+config/secrets.json
+config/api_keys.json
+secrets.py
+api_keys.py
+ 
+# ---------- LOGS ----------
+logs/
+*.log
+latency_results.json
+benchmark_results/
+ 
+# ---------- IDE & EDITOR ----------
+# VS Code
+.vscode/
+*.code-workspace
+ 
+# PyCharm
+.idea/
+*.iml
+ 
+# Jupyter (if used for evaluation notebooks)
+.ipynb_checkpoints/
+*.ipynb
+ 
+# ---------- OS FILES ----------
+# Windows
+Thumbs.db
+desktop.ini
+*.lnk
+ 
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+ 
+# Linux
+*~
+ 
+# ---------- TESTING ----------
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.cover
+ 
+# ---------- TYPST (proposal/report) ----------
+# Compiled PDFs from Typst are generated, not committed
+# (comment this out if you WANT to commit the PDF)
+*.pdf
