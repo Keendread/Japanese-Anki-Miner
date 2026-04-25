@@ -25,7 +25,7 @@ torchvision
 
 # ---------- JAPANESE NLP ----------
 sudachipy                # Japanese morphological analyzer
-sudachidict-full         # Full SudachiPy dictionary (covers compounds + proper nouns)
+sudachidict_full         # Full SudachiPy dictionary (covers compounds + proper nouns)
                          # Install separately: pip install sudachidict-full
  
 # ---------- DICTIONARY ----------
