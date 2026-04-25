@@ -11,6 +11,7 @@ from mss import mss
 from PIL import Image
 
 from core import ocr
+from core import parser
 
 try:
     import win32api
@@ -152,7 +153,15 @@ class CaptureController:
             print(f"Saved: {filepath}")
             
             text = ocr.extract_text(image)
+            if not text:
+                print("[Mouse] No text found.")
+                return
             print(f"OCR result: {text}")
+            
+            word_data = parser.parse(text)
+            if not word_data:
+                print("[Mouse] Could not parse text.")
+                return
 
         except Exception as e:
             print(f"Capture failed: {e}")
@@ -176,21 +185,32 @@ class CaptureController:
         try:
             from core.bbox import open_bbox_overlay
             open_bbox_overlay(self._on_bbox_capture)
+            
         except Exception as e:
             import traceback
             traceback.print_exc()
             print(f"[BBox] Overlay failed: {e}")
+            
         finally:
             self._bbox_open = False
 
     def _on_bbox_capture(self, image: Image.Image):
-        def  process():
+        def process():
             try:
                 filepath = save_capture(image)
                 print(f"[BBox] Saved: {filepath}")
 
                 text = ocr.extract_text(image)
+                if not text:
+                    print("[BBox] No text found.")
+                    return
                 print(f"[BBox] OCR result: {text}")
+                
+                word_data = parser.parse(text)
+                if not word_data:
+                    print("[BBox] Could not parse text.")
+                    return
+                
             except Exception as e:
                 print(f"[BBox] Post-capture failed: {e}")
         

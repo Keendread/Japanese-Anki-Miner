@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from core.settings import SettingsManager
 from core.capture import CaptureController
 from core import ocr
+from core import parser
 from pynput import keyboard
 
 main_thread_queue = queue.Queue()
@@ -37,6 +38,7 @@ capture = CaptureController(combo, settings, main_thread_queue)
 settings.on_change(update_combo)
 
 threading.Thread(target=ocr.get_model, daemon=True).start()
+threading.Thread(target=parser.get_tokenizer, daemon=True).start()
 
 print(f"JAM running - hotkey: {settings.get('capture_combo')}")
 print("Press Ctrl+C to quit.")
