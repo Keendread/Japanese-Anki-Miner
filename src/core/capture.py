@@ -13,6 +13,8 @@ from PIL import Image
 from core import ocr
 from core import parser
 from core import dictionary
+from core import anki
+from core import notifier
 
 try:
     import win32api
@@ -255,12 +257,6 @@ class CaptureController:
             return
  
         parse_result["capture_path"] = filepath
- 
-        print(
-            f"[Process] Word: {parse_result['surface']} "
-            f"({parse_result['reading']}) [{parse_result['pos']}] "
-            f">>> {parse_result['dictionary_form']}"
-        )
         
         # Dictionary Lookup
         dict_result = dictionary.lookup(parse_result)
@@ -271,20 +267,42 @@ class CaptureController:
         # Merge parse + dictionary results into one payload
         payload = {**parse_result, **dict_result}
  
-        print(
-            f"[Process] Definition: {payload['main_definition']} | "
-            f"Pitch: {payload['pitch_pattern']} ({payload['pitch_category']}) | "
-            f"Freq: #{payload['frequency_rank']} | "
-            f"JLPT: {payload['jlpt_level']}"
-        )
+        # Duplicate check
+        if anki.is_already_mined(
+            payload["dictionary_form"],
+            payload["reading"]
+        ):
+            print(f"[Process] Already mined: {payload['surface']}")
+            notifier.show_duplicate_toast(
+                payload["surface"],
+                payload["reading"],
+                self.main_thread_queue
+            )
+            return
         
-        if payload.get("example_sentences"):
-            print("[Process] Examples:")
-            for ex in payload["example_sentences"]:
-                print(f"  JP: {ex['japanese']}")
-                if ex.get("english"):
-                    print(f"  EN: {ex['english']}")
-        else:
-            print("[Process] No example sentences found.")
+        # Show card preview toast
+        settings = self.settings
+
+        def on_confirm():
+            success, message, note_id = anki.add_card(payload, settings)
+            if success:
+                print(f"[Anki] {message}")
+                notifier.show_success_toast(
+                    payload["surface"],
+                    self.main_thread_queue
+                )
+            else:
+                print(f"[Anki] Failed: {message}")
+
+        def on_discard():
+            print(f"[Process] Discarded: {payload['surface']}")
+        
+        notifier.show_card_toast(
+            payload,
+            settings,
+            self.main_thread_queue,
+            on_confirm=on_confirm,
+            on_discard=on_discard
+        )
  
-        # TODO: pass payload to audio.py → image.py → notifier.py
+        # TODO: audio.py + image.py

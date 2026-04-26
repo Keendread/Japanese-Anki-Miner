@@ -18,6 +18,7 @@ from core.capture import CaptureController
 from core import ocr
 from core import parser
 from core import dictionary
+from core import anki
 from pynput import keyboard
 
 main_thread_queue = queue.Queue()
@@ -108,6 +109,7 @@ combo = {str_to_key(k) for k in settings.get("capture_combo")}
 capture = CaptureController(combo, settings, main_thread_queue)
 settings.on_change(update_combo)
 
+# Background threads
 print("[Startup] Loading OCR model in background...")
 threading.Thread(target=ocr.get_model,        daemon=True).start()
  
@@ -116,6 +118,14 @@ threading.Thread(target=parser.get_tokenizer, daemon=True).start()
 
 print("[Startup] Opening dictionary connection in background...")
 threading.Thread(target=dictionary.init,      daemon=True).start()
+
+# Sync existing Anki cards into mined.db (non-blocking, non-fatal)
+def _sync_anki():
+    deck = settings.get("anki_deck", "Test Deck")
+    anki.sync_mined_from_anki(deck)
+    
+threading.Thread(target=_sync_anki, daemon=True).start()
+
  
 print(f"[Startup] Hotkey: {settings.get('capture_combo')}")
 print(f"[Startup] Capture mode: {settings.get('capture_mode', 'bbox')}")
