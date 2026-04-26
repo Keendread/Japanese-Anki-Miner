@@ -12,6 +12,7 @@ from PIL import Image
 
 from core import ocr
 from core import parser
+from core import dictionary
 
 try:
     import win32api
@@ -69,6 +70,32 @@ def save_capture(image: Image.Image, output_dir: str = "captures") -> str:
     image.save(filepath)
     return filepath
     
+def _wait_for_ready(timeout: float = 30.0) -> bool:
+    """
+    Waits for both OCR model and parser tokenizer to finish loading.
+    Prints status if either is still loading when called.
+    Returns True if both are ready within timeout, False otherwise.
+ 
+    Args:
+        timeout: Maximum seconds to wait for each component
+    """
+    ocr_ready    = ocr._model_ready.is_set()
+    parser_ready = parser._parser_ready.is_set()
+ 
+    if not ocr_ready or not parser_ready:
+        ocr_status    = "✓" if ocr_ready    else "..."
+        parser_status = "✓" if parser_ready else "..."
+        print(f"[JAM] Models still loading (OCR: {ocr_status}  Parser: {parser_status}) — waiting...")
+ 
+    if not ocr._model_ready.wait(timeout=timeout):
+        print("[JAM] Timed out waiting for OCR model.")
+        return False
+ 
+    if not parser._parser_ready.wait(timeout=timeout):
+        print("[JAM] Timed out waiting for parser.")
+        return False
+ 
+    return True
     
 class CaptureController:
     def __init__(self, combo, settings, main_thread_queue: queue.Queue):
@@ -152,19 +179,10 @@ class CaptureController:
             filepath = save_capture(image)
             print(f"Saved: {filepath}")
             
-            text = ocr.extract_text(image)
-            if not text:
-                print("[Mouse] No text found.")
-                return
-            print(f"OCR result: {text}")
-            
-            word_data = parser.parse(text)
-            if not word_data:
-                print("[Mouse] Could not parse text.")
-                return
+            self._process(image, filepath)
 
         except Exception as e:
-            print(f"Capture failed: {e}")
+            print(f"[Mouse] Capture failed: {e}")
             
     def _trigger_bbox(self):
         """
@@ -175,43 +193,98 @@ class CaptureController:
             print("[BBox] Overlay already open, ignoring re-trigger.")
             return
 
-        self._bbox_open = True
-        print("[BBox] Queing task...")
+        print("[BBox] Queuing overlay...")
         self.main_thread_queue.put(self._open_bbox_on_main_thread)
-        print("[BBox] Task queued.")
         
     def _open_bbox_on_main_thread(self):
-        print("[BBox] Main thread received task, opening overlay...")
+        """Opens tkinter overlay. Must be called from main thread via queue."""
+        self._bbox_open = True
         try:
             from core.bbox import open_bbox_overlay
             open_bbox_overlay(self._on_bbox_capture)
-            
         except Exception as e:
             import traceback
             traceback.print_exc()
             print(f"[BBox] Overlay failed: {e}")
-            
         finally:
             self._bbox_open = False
 
     def _on_bbox_capture(self, image: Image.Image):
+        """
+        Callback from bbox overlay after user draws selection.
+        Offloads to background thread so main thread stays free.
+        """
         def process():
             try:
                 filepath = save_capture(image)
                 print(f"[BBox] Saved: {filepath}")
-
-                text = ocr.extract_text(image)
-                if not text:
-                    print("[BBox] No text found.")
-                    return
-                print(f"[BBox] OCR result: {text}")
-                
-                word_data = parser.parse(text)
-                if not word_data:
-                    print("[BBox] Could not parse text.")
-                    return
-                
+                self._process(image, filepath)
             except Exception as e:
                 print(f"[BBox] Post-capture failed: {e}")
-        
+ 
         threading.Thread(target=process, daemon=True).start()
+        
+        
+    def _process(self, image: Image.Image, filepath: str):
+        """
+        Shared pipeline after any capture — called by both fixed and bbox modes.
+        Waits for model readiness here so both modes behave identically:
+        the capture always happens at the right moment, and OCR runs
+        as soon as models are available.
+ 
+        Args:
+            image:    PIL Image of the capture
+            filepath: path where the capture was saved (used as card context image)
+        """
+        # Wait for both models — prints status if still loading
+        if not _wait_for_ready():
+            print("[Process] Models not ready in time, dropping capture.")
+            return
+ 
+        # OCR
+        text = ocr.extract_text(image)
+        if not text:
+            print("[Process] OCR returned empty string, skipping.")
+            return
+        print(f"[Process] OCR: {text}")
+ 
+        # Parse
+        parse_result = parser.parse(text)
+        if parse_result is None:
+            print("[Process] Parser returned no result, skipping.")
+            return
+ 
+        parse_result["capture_path"] = filepath
+ 
+        print(
+            f"[Process] Word: {parse_result['surface']} "
+            f"({parse_result['reading']}) [{parse_result['pos']}] "
+            f">>> {parse_result['dictionary_form']}"
+        )
+        
+        # Dictionary Lookup
+        dict_result = dictionary.lookup(parse_result)
+        if dict_result is None:
+            print("[Process] No dictionary entry found, skipping.")
+            return
+ 
+        # Merge parse + dictionary results into one payload
+        payload = {**parse_result, **dict_result}
+ 
+        print(
+            f"[Process] Definition: {payload['main_definition']} | "
+            f"Pitch: {payload['pitch_pattern']} ({payload['pitch_category']}) | "
+            f"Freq: #{payload['frequency_rank']} | "
+            f"JLPT: {payload['jlpt_level']}"
+        )
+        
+        if payload.get("example_sentences"):
+            print("[Process] Examples:")
+            for ex in payload["example_sentences"]:
+                print(f"  JP: {ex['japanese']}")
+                if ex.get("english"):
+                    print(f"  EN: {ex['english']}")
+        else:
+            print("[Process] No example sentences found.")
+ 
+        # TODO: pass payload to audio.py → image.py → notifier.py

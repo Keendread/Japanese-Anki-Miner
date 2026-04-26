@@ -1,6 +1,9 @@
 # Module for NLP and tokenizing sentences
 
+import threading
 from sudachipy import tokenizer, dictionary
+
+_parser_ready = threading.Event()
 
 _tokenizer = None
 _tokenizer_lock = __import__("threading").Lock()
@@ -12,10 +15,14 @@ def get_tokenizer():
     with _tokenizer_lock:
         if _tokenizer is None:
             print("[Parser] Loading SudachiPy tokenizer...")
-            _dict = dictionary.Dictionary(dict_type="full")
-            _tokenizer = _dict.create(
-                mode=tokenizer.Tokenizer.SplitMode.C
-            )
+            try:
+                _dict = dictionary.Dictionary(dict_type="full")
+            except ModuleNotFoundError:
+                print("[Parser] sudachidict_full not found, falling back to core.")
+                _dict = dictionary.Dictionary(dict_type="core")
+ 
+            _tokenizer = _dict.create(mode=tokenizer.Tokenizer.SplitMode.C)
+            _parser_ready.set()
             print("[Parser] Tokenizer ready.")
     return _tokenizer
 
@@ -83,6 +90,38 @@ def identify_target(morphemes: list, cursor_offset: int = 0):
 
     return morphemes[0]
 
+def build_sentence_furigana(morphemes: list) -> str:
+    """
+    Builds a SentenceFurigana string in Lapis format.
+    Kanji-containing tokens become word[reading], kana-only tokens are plain.
+ 
+    Example output: "完全[かんぜん]なる 空[くう]"
+ 
+    Args:
+        morphemes: List of SudachiPy morphemes
+ 
+    Returns:
+        Furigana-annotated sentence string
+    """
+    import re
+    kanji_re = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]")
+    parts = []
+    for m in morphemes:
+        surface = m.surface()
+        reading = _kata_to_hira(m.reading_form())
+        if kanji_re.search(surface) and reading and reading != surface:
+            parts.append(f"{surface}[{reading}]")
+        else:
+            parts.append(surface)
+    return "".join(parts)
+
+def _kata_to_hira(text: str) -> str:
+    """Converts katakana to hiragana."""
+    return "".join(
+        chr(ord(c) - 0x60) if "ァ" <= c <= "ン" else c
+        for c in text
+    )
+
 def parse(text: str, cursor_offset: int = 0) -> dict | None:
     """
     Main entry point for parser.py
@@ -106,12 +145,14 @@ def parse(text: str, cursor_offset: int = 0) -> dict | None:
         return None
     
     result = {
-        "surface":          target.surface(),
-        "dictionary_form":  target.dictionary_form(),
-        "reading":          target.reading_form(),
-        "pos":              target.part_of_speech()[0],   # broad POS category
-        "pos_detail":       target.part_of_speech()[1],   # finer POS detail
-        "sentence":         text.strip(),                 # full OCR string as sentence context
+        "surface":           target.surface(),
+        "dictionary_form":   target.dictionary_form(),
+        "reading":           _kata_to_hira(target.reading_form()),
+        "pos":               target.part_of_speech()[0],   # broad POS category
+        "pos_detail":        target.part_of_speech()[1],   # finer POS detail
+        "sentence":          text.strip(),
+        "sentence_furigana": build_sentence_furigana(morphemes),
+        "capture_path":      None,  # filled in by capture.py
     }
     
     print(f"[Parser] Target: {result['surface']} ({result['reading']}) "
