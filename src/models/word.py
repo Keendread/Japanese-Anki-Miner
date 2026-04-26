@@ -43,6 +43,10 @@ class Word:
     sentence_audio_path: Optional[str] = None
     image_path: Optional[str] = None
     
+    def _fall_back_empty_string(self, value: Optional[str]) -> str:
+        """ Helper to convert None to empty string for media paths. """
+        return "" if not value else value
+
     def is_complete(self) -> bool:
         """
         Check if word has minimum required fields for card creation.
@@ -53,7 +57,7 @@ class Word:
         
         return (not self.surface.strip()) or (not self.reading.strip()) or (not self.definition.strip())
     
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, str]:
         """
         Convert Word to dictionary (useful for JSON serialization).
         """
@@ -66,9 +70,9 @@ class Word:
             "definition": self.definition,
             "definition_pos": self.definition_pos,
             "sentence": self.sentence,
-            "word_audio_path": self.word_audio_path,
-            "sentence_audio_path": self.sentence_audio_path,
-            "image_path": self.image_path
+            "word_audio_path": self._fall_back_empty_string(self.word_audio_path),
+            "sentence_audio_path": self._fall_back_empty_string(self.sentence_audio_path),
+            "image_path": self._fall_back_empty_string(self.image_path),
         }
     
     def __str__(self) -> str:

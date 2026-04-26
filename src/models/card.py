@@ -1,5 +1,5 @@
-from dataclasses import dataclass, field
-from typing import Optional, Dict, List
+from dataclasses import dataclass
+from typing import Optional, Dict
 from models.word import Word
 
 
@@ -92,7 +92,7 @@ class Card:
         Check if card has minimum required fields for Anki.
         Requires: expression, reading, meaning
         """
-        return self.word.is_complete()
+        return bool(self.word and self.word.is_complete())
     
     def to_anki_fields(self) -> Dict[str, str]:
         """
@@ -113,7 +113,7 @@ class Card:
             "Image": self.image,
         }
     
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, str]:
         """
         Convert Card to dictionary (useful for JSON serialization).
         """
@@ -126,7 +126,7 @@ class Card:
             "word_audio": self.word_audio,
             "sentence_audio": self.sentence_audio,
             "image": self.image,
-            "source_url": self.source_url,
+            "source_url": "" if not self.source_url else self.source_url,
         }
     
     def __str__(self) -> str:
