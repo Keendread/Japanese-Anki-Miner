@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional, Dict
+from typing import Optional
 from models.word import Word
 
 
@@ -94,7 +94,7 @@ class Card:
         """
         return bool(self.word and self.word.is_complete())
     
-    def to_anki_fields(self) -> Dict[str, str]:
+    def to_anki_fields(self) -> dict[str, str]:
         """
         Convert Card fields to Anki note field format.
         Returns dict mapping field name → value.

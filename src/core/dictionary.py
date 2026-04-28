@@ -4,7 +4,7 @@
 import os
 import threading
 from lxml import etree
-from typing import Optional, Dict, List
+from typing import Optional
 
 _jmdict_cache = None
 _cache_lock = threading.Lock()
@@ -14,14 +14,14 @@ _cache_ready = threading.Event()
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 JMDICT_PATH = os.path.join(_PROJECT_ROOT, "data", "JMdict_e.xml")
 
-def _load_jmdict() -> Dict[str, List[Dict[str, str]]]:
+def _load_jmdict() -> dict[str, list[dict[str, str]]]:
     """
     Parses JMdict XML file into an in-memory dict.
     Key: Japanese surface form (kanji or hiragana)
     Value: List of entry dicts with (definition, reading, pos)
     
     Returns:
-        Dict[str, List[Dict]]: Cached dictionary database
+        dict[str, list[dict[str, str]]]: Cached dictionary database
     """
     if not os.path.exists(JMDICT_PATH):
         print(f"[Dictionary] WARNING: JMdict not found at {JMDICT_PATH}")
@@ -29,7 +29,7 @@ def _load_jmdict() -> Dict[str, List[Dict[str, str]]]:
         return {}
     
     print(f"[Dictionary] Loading JMdict from {JMDICT_PATH}...")
-    cache: Dict[str, List[Dict[str, str]]] = {}
+    cache: dict[str, list[dict[str, str]]] = {}
     
     try:
         tree = etree.parse(JMDICT_PATH)
@@ -122,13 +122,13 @@ def _load_jmdict() -> Dict[str, List[Dict[str, str]]]:
         _cache_ready.set()
         return {}
 
-def get_dictionary() -> Dict[str, List[Dict[str, str]]]:
+def get_dictionary() -> dict[str, list[dict[str, str]]]:
     """
     Returns the loaded JMdict cache, loading on first call.
     Blocks until cache is ready.
     
     Returns:
-        Dict[str, List[Dict]]: Word → list of definitions
+        dict[str, list[dict[str, str]]]: Word → list of definitions
     """
     global _jmdict_cache
     with _cache_lock:
@@ -136,7 +136,7 @@ def get_dictionary() -> Dict[str, List[Dict[str, str]]]:
             _jmdict_cache = _load_jmdict()
     return _jmdict_cache
 
-def lookup(word: str) -> Optional[Dict[str, str]]:
+def lookup(word: str) -> Optional[dict[str, str]]:
     """
     Look up a Japanese word in JMdict.
     Returns the first (most common) entry.
@@ -166,7 +166,7 @@ def lookup(word: str) -> Optional[Dict[str, str]]:
     
     return None
 
-def lookup_all(word: str) -> List[Dict[str, str]]:
+def lookup_all(word: str) -> list[dict[str, str]]:
     """
     Look up a Japanese word and return ALL entries (multiple definitions).
     
@@ -174,7 +174,7 @@ def lookup_all(word: str) -> List[Dict[str, str]]:
         word (str): Japanese word
     
     Returns:
-        List[Dict]: List of all matching entries, or [] if not found
+        list[dict[str,str]]: List of all matching entries, or [] if not found
     """
     if not word.strip():
         return []
@@ -187,3 +187,11 @@ def lookup_all(word: str) -> List[Dict[str, str]]:
 def is_ready() -> bool:
     """Check if JMdict is fully loaded."""
     return _cache_ready.is_set()
+
+# Test helpers
+def reset_cache():
+    """Reset the cache (for testing purposes)."""
+    global _jmdict_cache
+    with _cache_lock:
+        _jmdict_cache = None
+        _cache_ready.clear()
