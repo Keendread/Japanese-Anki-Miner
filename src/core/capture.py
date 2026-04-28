@@ -12,6 +12,9 @@ from PIL import Image
 
 from core import ocr
 from core import parser
+from core import dictionary
+from core import anki
+from core import notifier
 
 try:
     import win32api
@@ -69,6 +72,32 @@ def save_capture(image: Image.Image, output_dir: str = "captures") -> str:
     image.save(filepath)
     return filepath
     
+def _wait_for_ready(timeout: float = 30.0) -> bool:
+    """
+    Waits for both OCR model and parser tokenizer to finish loading.
+    Prints status if either is still loading when called.
+    Returns True if both are ready within timeout, False otherwise.
+ 
+    Args:
+        timeout: Maximum seconds to wait for each component
+    """
+    ocr_ready    = ocr._model_ready.is_set()
+    parser_ready = parser._parser_ready.is_set()
+ 
+    if not ocr_ready or not parser_ready:
+        ocr_status    = "✓" if ocr_ready    else "..."
+        parser_status = "✓" if parser_ready else "..."
+        print(f"[JAM] Models still loading (OCR: {ocr_status}  Parser: {parser_status}) — waiting...")
+ 
+    if not ocr._model_ready.wait(timeout=timeout):
+        print("[JAM] Timed out waiting for OCR model.")
+        return False
+ 
+    if not parser._parser_ready.wait(timeout=timeout):
+        print("[JAM] Timed out waiting for parser.")
+        return False
+ 
+    return True
     
 class CaptureController:
     def __init__(self, combo, settings, main_thread_queue: queue.Queue):
@@ -152,19 +181,10 @@ class CaptureController:
             filepath = save_capture(image)
             print(f"Saved: {filepath}")
             
-            text = ocr.extract_text(image)
-            if not text:
-                print("[Mouse] No text found.")
-                return
-            print(f"OCR result: {text}")
-            
-            word_data = parser.parse(text)
-            if not word_data:
-                print("[Mouse] Could not parse text.")
-                return
+            self._process(image, filepath)
 
         except Exception as e:
-            print(f"Capture failed: {e}")
+            print(f"[Mouse] Capture failed: {e}")
             
     def _trigger_bbox(self):
         """
@@ -175,43 +195,114 @@ class CaptureController:
             print("[BBox] Overlay already open, ignoring re-trigger.")
             return
 
-        self._bbox_open = True
-        print("[BBox] Queing task...")
+        print("[BBox] Queuing overlay...")
         self.main_thread_queue.put(self._open_bbox_on_main_thread)
-        print("[BBox] Task queued.")
         
     def _open_bbox_on_main_thread(self):
-        print("[BBox] Main thread received task, opening overlay...")
+        """Opens tkinter overlay. Must be called from main thread via queue."""
+        self._bbox_open = True
         try:
             from core.bbox import open_bbox_overlay
             open_bbox_overlay(self._on_bbox_capture)
-            
         except Exception as e:
             import traceback
             traceback.print_exc()
             print(f"[BBox] Overlay failed: {e}")
-            
         finally:
             self._bbox_open = False
 
     def _on_bbox_capture(self, image: Image.Image):
+        """
+        Callback from bbox overlay after user draws selection.
+        Offloads to background thread so main thread stays free.
+        """
         def process():
             try:
                 filepath = save_capture(image)
                 print(f"[BBox] Saved: {filepath}")
-
-                text = ocr.extract_text(image)
-                if not text:
-                    print("[BBox] No text found.")
-                    return
-                print(f"[BBox] OCR result: {text}")
-                
-                word_data = parser.parse(text)
-                if not word_data:
-                    print("[BBox] Could not parse text.")
-                    return
-                
+                self._process(image, filepath)
             except Exception as e:
                 print(f"[BBox] Post-capture failed: {e}")
-        
+ 
         threading.Thread(target=process, daemon=True).start()
+        
+        
+    def _process(self, image: Image.Image, filepath: str):
+        """
+        Shared pipeline after any capture — called by both fixed and bbox modes.
+        Waits for model readiness here so both modes behave identically:
+        the capture always happens at the right moment, and OCR runs
+        as soon as models are available.
+ 
+        Args:
+            image:    PIL Image of the capture
+            filepath: path where the capture was saved (used as card context image)
+        """
+        # Wait for both models — prints status if still loading
+        if not _wait_for_ready():
+            print("[Process] Models not ready in time, dropping capture.")
+            return
+ 
+        # OCR
+        text = ocr.extract_text(image)
+        if not text:
+            print("[Process] OCR returned empty string, skipping.")
+            return
+        print(f"[Process] OCR: {text}")
+ 
+        # Parse
+        parse_result = parser.parse(text)
+        if parse_result is None:
+            print("[Process] Parser returned no result, skipping.")
+            return
+ 
+        parse_result["capture_path"] = filepath
+        
+        # Dictionary Lookup
+        dict_result = dictionary.lookup(parse_result)
+        if dict_result is None:
+            print("[Process] No dictionary entry found, skipping.")
+            return
+ 
+        # Merge parse + dictionary results into one payload
+        payload = {**parse_result, **dict_result}
+ 
+        # Duplicate check
+        if anki.is_already_mined(
+            payload["dictionary_form"],
+            payload["reading"]
+        ):
+            print(f"[Process] Already mined: {payload['surface']}")
+            notifier.show_duplicate_toast(
+                payload["surface"],
+                payload["reading"],
+                self.main_thread_queue
+            )
+            return
+        
+        # Show card preview toast
+        settings = self.settings
+
+        def on_confirm():
+            success, message, note_id = anki.add_card(payload, settings)
+            if success:
+                print(f"[Anki] {message}")
+                notifier.show_success_toast(
+                    payload["surface"],
+                    self.main_thread_queue
+                )
+            else:
+                print(f"[Anki] Failed: {message}")
+
+        def on_discard():
+            print(f"[Process] Discarded: {payload['surface']}")
+        
+        notifier.show_card_toast(
+            payload,
+            settings,
+            self.main_thread_queue,
+            on_confirm=on_confirm,
+            on_discard=on_discard
+        )
+ 
+        # TODO: audio.py + image.py

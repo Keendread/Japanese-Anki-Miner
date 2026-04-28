@@ -8,13 +8,13 @@ SETTINGS_FILE = os.path.join(BASE_DIR, "settings.json")
 DEFAULT_SETTINGS = {
     "capture_combo":    ["shift", "a"],
     "capture_mode":     "bbox",
-    
     "capture_width":    200,
     "capture_height":   60,
     
-    "anki_deck":        "Japanese Mining",
-    "anki_note_type":   "JP Mining Note",
-    "anki_media_path":  "",
+    "anki_deck":        "Test Deck",
+    "anki_note_type":   "Lapis",
+    "anki_misc_info":   "JAM",
+    "anki_media_path":  "", # e.g. C:/Users/user/AppData/Roaming/Anki2/User 1/collection.media
 }
 
 class SettingsManager:
@@ -69,8 +69,7 @@ class SettingsManager:
                 except FileNotFoundError:
                     pass
         
-        thread = threading.Thread(target=watch, daemon=True)
-        thread.start()
+        threading.Thread(target=watch, daemon=True).start()
 
     def get(self, key: str, fallback=None):
         """Get a single setting value."""
