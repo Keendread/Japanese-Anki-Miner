@@ -6,6 +6,7 @@ import os
 import sqlite3
 import threading
 import json
+from src.models.word import Word
 
 _conn = None
 _conn_lock = threading.Lock()
@@ -161,20 +162,20 @@ def _score_sense(sense: sqlite3.Row, parser_pos: str, sentence:str) -> int:
     return score
 
 
-def lookup(parse_result: dict) -> dict | None:
+def lookup(parse_result: Word) -> dict | None:
     """
     Main entry point for dictionary.py.
     Takes parse result from parser.py and returns enriched dictionary data.
 
     Args:
-        parse_result (dict): dict from parser.parse() containing:
+        parse_result (Word): Word dataclass object from parser.parse() containing:
                              surface, dictionary_form, reading, pos, sentence
     """
-    dictionary_form = parse_result.get("dictionary_form", "")
-    surface = parse_result.get("surface", "")
-    reading = parse_result.get("reading", "")
-    parser_pos = parse_result.get("pos", "")
-    sentence = parse_result.get("sentence", "")
+    dictionary_form = parse_result.dictionary_form
+    surface = parse_result.surface
+    reading = parse_result.reading
+    parser_pos = parse_result.pos
+    sentence = parse_result.full_sentence
 
     try:
         conn = get_connection()

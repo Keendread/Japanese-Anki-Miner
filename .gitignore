@@ -78,6 +78,7 @@ captured_*.png
 jam_image_*.png
 jam_audio_*.mp3
 jam_audio_*.wav
+captures/
  
 # ---------- API KEYS & SECRETS ----------
 .env

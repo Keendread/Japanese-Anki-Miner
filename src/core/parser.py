@@ -2,6 +2,7 @@
 
 import threading
 from sudachipy import tokenizer, dictionary
+from src.models.word import Word
 
 _parser_ready = threading.Event()
 
@@ -159,3 +160,14 @@ def parse(text: str, cursor_offset: int = 0) -> dict | None:
           f"[{result['pos']}] → dict form: {result['dictionary_form']}")
 
     return result
+
+def to_word_object(parse_result: dict) -> "Word":
+    """Converts a parse result dict to a Word dataclass object."""
+    return Word(
+        surface=parse_result.get("surface", ""),
+        dictionary_form=parse_result.get("dictionary_form", ""),
+        reading=parse_result.get("reading", ""),
+        pos=parse_result.get("pos", ""),
+        meaning="",  # to be filled in by dictionary.py
+        full_sentence=parse_result.get("sentence", "")
+    )

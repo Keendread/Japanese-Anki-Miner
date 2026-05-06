@@ -15,6 +15,7 @@ from core import parser
 from core import dictionary
 from core import anki
 from core import notifier
+from src.models.word import Word
 
 try:
     import win32api
@@ -256,16 +257,48 @@ class CaptureController:
             print("[Process] Parser returned no result, skipping.")
             return
  
-        parse_result["capture_path"] = filepath
+        word = Word(
+            surface = parse_result["surface"],
+            dictionary_form = parse_result["dictionary_form"],
+            reading = parse_result["reading"],
+            pos = parse_result["pos"],
+            meaning = None, # to be filled by dictionary lookup
+            full_sentence = text,
+            capture_path = filepath
+        )
         
         # Dictionary Lookup
-        dict_result = dictionary.lookup(parse_result)
+        dict_result = dictionary.lookup(word)
         if dict_result is None:
             print("[Process] No dictionary entry found, skipping.")
             return
- 
-        # Merge parse + dictionary results into one payload
-        payload = {**parse_result, **dict_result}
+
+        # Update Word with dictionary data
+        word.update_from_dictionary(dict_result)
+        
+        # Validate Word before creating card
+        if not word.is_valid():
+            print(f"[Process] Word '{word.surface}' is missing required fields.")
+            return
+        
+        # Build final payload from Word + additional parser data
+        # Map Word fields to expected anki.py field names
+        payload = {
+            "surface": word.surface,
+            "dictionary_form": word.dictionary_form,
+            "reading": word.reading,
+            "pos": word.pos,
+            "main_definition": word.meaning,
+            "glossary": word.glossary or [],
+            "pitch_pattern": word.pitch_pattern,
+            "pitch_category": word.pitch_category,
+            "frequency_rank": word.frequency_rank,
+            "jlpt_level": word.jlpt_level,
+            "example_sentences": word.example_sentences or [],
+            "sentence": word.full_sentence,
+            "sentence_furigana": parse_result.get("sentence_furigana", ""),
+            "capture_path": word.capture_path,
+        }
  
         # Duplicate check
         if anki.is_already_mined(
