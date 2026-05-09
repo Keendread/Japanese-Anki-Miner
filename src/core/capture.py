@@ -5,6 +5,7 @@ import threading
 import queue
 import os
 from datetime import datetime
+from typing import Tuple, Any
 
 from pynput import keyboard
 from mss import mss
@@ -24,7 +25,7 @@ except:
     WIN32_AVAILABLE = False
     import pyautogui
 
-def get_cursor_position() -> tuple[int, int]:
+def get_cursor_position() -> Tuple[int, int]:
     """Returns current (x, y) screen position of mouse cursor"""
     if WIN32_AVAILABLE:
         return win32api.GetCursorPos()
@@ -38,13 +39,13 @@ def capture_region(cursor_x: int, cursor_y: int,
     Captures rectangular region centered on the cursor
 
     Args:
-        cursor_x (int): x coord of mouse
-        cursor_y (int): y coord of mouse
-        width (int, optional): width of region. Defaults to 400.
-        height (int, optional): height of region. Defaults to 120.
+        cursor_x: X coordinate of cursor
+        cursor_y: Y coordinate of cursor
+        width: Width of region (default: 400)
+        height: Height of region (default: 120)
 
     Returns:
-        Image.Image: Image used for OCR
+        PIL Image suitable for OCR
     """
     x1 = cursor_x - width // 2
     y1 = cursor_y - height // 2
@@ -57,15 +58,14 @@ def capture_region(cursor_x: int, cursor_y: int,
 
 def save_capture(image: Image.Image, output_dir: str = "captures") -> str:
     """
-    Saves captured image to disk for debugging / dataset colletion.
-    Returns the saved file path.
+    Saves captured image to disk for debugging/dataset collection.
 
     Args:
-        image (Image.Image): Image captured by capture_region function
-        output_dir (str, optional): Set output directory. Defaults to "captures".
+        image: PIL Image from capture_region
+        output_dir: Output directory (default: "captures")
 
     Returns:
-        str: The filepath where the image is saved
+        Filepath where image was saved
     """
     os.makedirs(output_dir, exist_ok=True)
     filename = f"capture_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.png"
@@ -77,10 +77,12 @@ def _wait_for_ready(timeout: float = 30.0) -> bool:
     """
     Waits for both OCR model and parser tokenizer to finish loading.
     Prints status if either is still loading when called.
-    Returns True if both are ready within timeout, False otherwise.
- 
+    
     Args:
-        timeout: Maximum seconds to wait for each component
+        timeout: Maximum seconds to wait for each component (default: 30.0)
+        
+    Returns:
+        True if both ready within timeout, False otherwise
     """
     ocr_ready    = ocr._model_ready.is_set()
     parser_ready = parser._parser_ready.is_set()
@@ -101,26 +103,26 @@ def _wait_for_ready(timeout: float = 30.0) -> bool:
     return True
     
 class CaptureController:
-    def __init__(self, combo, settings, main_thread_queue: queue.Queue):
-        self.combo = combo
-        self.settings = settings
-        self.main_thread_queue = main_thread_queue
-        self.pressed_keys = set()
-        self.combo_active = False
+    def __init__(self, combo: set, settings: dict[str, Any], main_thread_queue: queue.Queue) -> None:
+        self.combo: set = combo
+        self.settings: dict[str, Any] = settings
+        self.main_thread_queue: queue.Queue = main_thread_queue
+        self.pressed_keys: set = set()
+        self.combo_active: bool = False
         
-        self._bbox_open = False
+        self._bbox_open: bool = False
         
-        self.listener = keyboard.Listener(
+        self.listener: keyboard.Listener = keyboard.Listener(
             on_press=self._on_press,
             on_release=self._on_release
         )
         
-    def _normalize(self, key):
+    def _normalize(self, key: Any) -> Any:
         if isinstance(key, keyboard.KeyCode):
             return key.char.lower() if key.char else key
         return key
         
-    def _on_press(self, key):
+    def _on_press(self, key: Any) -> None:
         self.pressed_keys.add(self._normalize(key))
         
         if self._matches_combo():
@@ -132,29 +134,29 @@ class CaptureController:
         if self._normalize(key) == "q":
             self.stop()
                 
-    def _on_release(self, key):
+    def _on_release(self, key: Any) -> None:
         self.pressed_keys.discard(self._normalize(key))
         if not self._matches_combo():
             self.combo_active = False
                 
-    def _matches_combo(self):
+    def _matches_combo(self) -> bool:
         return all(k in self.pressed_keys for k in self.combo)
             
-    def set_combo(self, new_combo: set):
+    def set_combo(self, new_combo: set) -> None:
         self.combo = new_combo
         
-    def start(self):
+    def start(self) -> None:
         print("[Capture] Running")
         self.listener.start()
         
-    def join(self):
+    def join(self) -> None:
         self.listener.join()
 
-    def stop(self):
+    def stop(self) -> None:
         print("[Capture] Stopped")
         self.listener.stop()
         
-    def on_trigger(self):
+    def on_trigger(self) -> None:
         """
         Called in a background thread when hotkey fires.
         Routes to mouse or bbox capture based on capture_mode setting.
@@ -169,8 +171,8 @@ class CaptureController:
             print(f"[Capture] Unknown capture_mode '{mode}', falling back to mouse.")
             self._trigger_mouse()
            
-    def _trigger_mouse(self):
-        """Mouse mode"""
+    def _trigger_mouse(self) -> None:
+        """Capture using fixed region around cursor"""
         try:
             x, y = get_cursor_position()
             print(f"[Mouse] Cursor at ({x}, {y})")
@@ -187,10 +189,10 @@ class CaptureController:
         except Exception as e:
             print(f"[Mouse] Capture failed: {e}")
             
-    def _trigger_bbox(self):
+    def _trigger_bbox(self) -> None:
         """
-        Opens a fullscreen transparent overlay.
-        User can release the hotkey and draw a region for apturing.
+        Opens fullscreen overlay for user to draw selection region.
+        User can release hotkey and draw a region for capturing.
         """
         if self._bbox_open:
             print("[BBox] Overlay already open, ignoring re-trigger.")
@@ -199,7 +201,7 @@ class CaptureController:
         print("[BBox] Queuing overlay...")
         self.main_thread_queue.put(self._open_bbox_on_main_thread)
         
-    def _open_bbox_on_main_thread(self):
+    def _open_bbox_on_main_thread(self) -> None:
         """Opens tkinter overlay. Must be called from main thread via queue."""
         self._bbox_open = True
         try:
@@ -212,7 +214,7 @@ class CaptureController:
         finally:
             self._bbox_open = False
 
-    def _on_bbox_capture(self, image: Image.Image):
+    def _on_bbox_capture(self, image: Image.Image) -> None:
         """
         Callback from bbox overlay after user draws selection.
         Offloads to background thread so main thread stays free.
@@ -228,7 +230,7 @@ class CaptureController:
         threading.Thread(target=process, daemon=True).start()
         
         
-    def _process(self, image: Image.Image, filepath: str):
+    def _process(self, image: Image.Image, filepath: str) -> None:
         """
         Shared pipeline after any capture — called by both fixed and bbox modes.
         Waits for model readiness here so both modes behave identically:
@@ -257,7 +259,7 @@ class CaptureController:
             print("[Process] Parser returned no result, skipping.")
             return
  
-        word = Word(
+        word: Word = Word(
             surface = parse_result["surface"],
             dictionary_form = parse_result["dictionary_form"],
             reading = parse_result["reading"],
@@ -299,7 +301,7 @@ class CaptureController:
             return
         
         # Show card preview toast
-        settings = self.settings
+        settings: dict[str, Any] = self.settings
 
         def on_confirm():
             success, message, note_id = anki.add_card(payload, settings)

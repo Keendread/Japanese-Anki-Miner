@@ -6,11 +6,12 @@ import os
 import sqlite3
 import threading
 import json
+from typing import Optional, Any
 from src.models.word import Word
 
-_conn = None
-_conn_lock = threading.Lock()
-_db_ready = threading.Event()
+_conn: Optional[sqlite3.Connection] = None
+_conn_lock: threading.Lock = threading.Lock()
+_db_ready: threading.Event = threading.Event()
 
 def _get_db_path() -> str:
     core_dir = os.path.dirname(os.path.abspath(__file__))  # src/core/
@@ -43,7 +44,7 @@ def get_connection() -> sqlite3.Connection:
             print("[Dictionary] Database ready.")
     return _conn
 
-def init():
+def init() -> None:
     """
     Pre-opens the DB connection at startup so first lookup is instant.
     Call from a background thread in main.py.
@@ -59,22 +60,22 @@ def init():
 def _find_entry_id(cur: sqlite3.Cursor,
                    dictionary_form: str,
                    surface: str,
-                   reading: str) -> int | None:
+                   reading: str) -> Optional[int]:
     """
-    Try to find a matching entry_id using the following priority:
+    Tries to find a matching entry_id using priority search:
         1. dictionary_form vs kanji_forms
         2. dictionary_form vs kana_forms
         3. surface vs kanji_forms
         4. reading vs kana_forms
 
     Args:
-        cur (sqlite3.Cursor):   SQLite cursor
-        dictionary_form (str):  base form of word from parser
-        surface (str):          surface form from parser
-        reading (str):          hiragana reading from parser
+        cur: SQLite cursor
+        dictionary_form: Base form of word from parser
+        surface: Surface form from parser  
+        reading: Hiragana reading from parser
 
     Returns:
-        int | None: entry_id
+        Entry ID if found, None otherwise
     """
     candidates = [
         (dictionary_form, "kanji_forms"),
@@ -162,20 +163,22 @@ def _score_sense(sense: sqlite3.Row, parser_pos: str, sentence:str) -> int:
     return score
 
 
-def lookup(parse_result: Word) -> dict | None:
+def lookup(parse_result: Word) -> Optional[dict[str, Any]]:
     """
     Main entry point for dictionary.py.
-    Takes parse result from parser.py and returns enriched dictionary data.
+    Takes Word object and returns enriched dictionary data.
 
     Args:
-        parse_result (Word): Word dataclass object from parser.parse() containing:
-                             surface, dictionary_form, reading, pos, sentence
+        parse_result: Word dataclass object with surface, dictionary_form, reading, pos, full_sentence
+
+    Returns:
+        Dictionary with enriched word data, or None if lookup fails
     """
     dictionary_form = parse_result.dictionary_form
     surface = parse_result.surface
     reading = parse_result.reading
     parser_pos = parse_result.pos
-    sentence = parse_result.full_sentence
+    sentence = parse_result.full_sentence or ""
 
     try:
         conn = get_connection()
@@ -208,7 +211,7 @@ def lookup(parse_result: Word) -> dict | None:
             main_definition = main_sense["gloss"]
             
             # GLOSSARY
-            glossary = [
+            glossary: list[dict[str, Any]] = [
                 {
                     "gloss":      s["gloss"],
                     "pos":        s["pos"] or "",
@@ -266,7 +269,7 @@ def lookup(parse_result: Word) -> dict | None:
                 for r in tat_rows
             ]
  
-        result = {
+        result: dict[str, Any] = {
             "main_definition":   main_definition,
             "glossary":          glossary,
             "pitch_pattern":     pitch_pattern,

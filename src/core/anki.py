@@ -9,20 +9,21 @@ import threading
 import urllib.request
 import urllib.error
 from datetime import datetime
+from typing import Optional, Dict, List, Any, Tuple
 from src.models.word import Word
 
 def _get_data_dir() -> str:
-    core_dir = os.path.dirname(os.path.abspath(__file__)) # src/core/
-    src_dir = os.path.dirname(core_dir)                   # src/
-    root_dir = os.path.dirname(src_dir)                   # project root
+    core_dir: str = os.path.dirname(os.path.abspath(__file__)) # src/core/
+    src_dir: str = os.path.dirname(core_dir)                   # src/
+    root_dir: str = os.path.dirname(src_dir)                   # project root
     return os.path.join(root_dir, "data")
 
-MINED_DB_PATH = os.path.join(_get_data_dir(), "mined.db")
-ANKICONNECT_URL = "http://localhost:8765"
-ANKICONNECT_VER = 6
+MINED_DB_PATH: str = os.path.join(_get_data_dir(), "mined.db")
+ANKICONNECT_URL: str = "http://localhost:8765"
+ANKICONNECT_VER: int = 6
 
-_mined_conn = None
-_mined_conn_lock = threading.Lock()
+_mined_conn: Optional[sqlite3.Connection] = None
+_mined_conn_lock: threading.Lock = threading.Lock()
 
 _MINED_SCHEMA = """
 CREATE TABLE IF NOT EXISTS mined_words (
@@ -71,7 +72,7 @@ def is_already_mined(dictionary_form: str, reading: str) -> bool:
         print(f"[Anki] Mined check failed: {e}")
         return False
     
-def _record_mined(dictionary_form: str, reading: str, note_id: int | None):
+def _record_mined(dictionary_form: str, reading: str, note_id: Optional[int]) -> None:
     """Records the word as mined in the local DB."""
     try:
         conn = _get_mined_conn()
@@ -91,7 +92,7 @@ def _record_mined(dictionary_form: str, reading: str, note_id: int | None):
     except Exception as e:
         print(f"[Anki] Failed to record mined word: {e}")
         
-def sync_mined_from_anki(deck_name: str):
+def sync_mined_from_anki(deck_name: str) -> None:
     """
     Pulls existing note expressions from AnkiConnect and records them
     in mined.db so duplicates are detected even for cards made by Yomitan.
@@ -127,7 +128,7 @@ def sync_mined_from_anki(deck_name: str):
         print(f"[Anki] Sync skipped (Anki may not be open): {e}")
         
 
-def _ankiconnect(action: str, **params):
+def _ankiconnect(action: str, **params: Any) -> Any:
     """
     Sends a request to AnkiConnect and returns the result.
     Raises RuntimeError on failure.
@@ -171,18 +172,21 @@ def is_anki_connect_available() -> bool:
         return False
     
 
-def _build_glossary_html(glossary: list) -> str:
+def _build_glossary_html(glossary: List[Dict[str, Any]]) -> str:
     """
-    Builds a clean HTML glossary from the list of sense dicts.
+    Builds HTML glossary from sense dictionaries.
     Format matches Lapis's expected <ol> structure.
 
     Args:
-        glossary (list): list of sense dicts from dictionary.py
+        glossary: List of sense dictionaries from dictionary.py
+
+    Returns:
+        HTML string representing the glossary
     """
     if not glossary:
         return ""
 
-    items = []
+    items: List[Any] = []
     for sense in glossary:
         pos = sense.get("pos", "")
         gloss = sense.get("gloss", "")
@@ -239,17 +243,17 @@ def _build_furigana_expression(surface: str, reading: str) -> str:
     return surface
 
 
-def add_card(payload: Word, settings) -> tuple[bool, str, int | None]:
+def add_card(payload: Word, settings: Dict[str, Any]) -> Tuple[bool, str, Optional[int]]:
     """
-    Creates an Anki card from the full pipeline payload.
+    Creates an Anki card from a Word object.
     Records the word in mined.db on success.
 
     Args:
-        payload (word):     merged word from parser + dictionary + audio + image
-        settings (_type_):  SettingsManager instance for deck/note type config
+        payload: Word object with all enriched word data
+        settings: Settings dictionary with anki_deck, anki_note_type, etc.
 
     Returns:
-        tuple[bool, str, int | None]: [success: bool, message: str, note_id: int | None]
+        Tuple of (success: bool, message: str, note_id: Optional[int])
     """
     dictionary_form = payload.dictionary_form
     reading         = payload.reading
@@ -261,10 +265,10 @@ def add_card(payload: Word, settings) -> tuple[bool, str, int | None]:
     pitch_pattern   = payload.pitch_pattern or ""
     pitch_category  = payload.pitch_category or ""
     frequency_rank  = payload.frequency_rank or None
-    jlpt_level      = payload.jlpt_level or None
+    jlpt_level      = payload.jlpt_level or None # type: ignore
     capture_path    = payload.capture_path or ""
-    audio_path      = payload.audio or ""
-    image_path      = payload.capture_path or ""
+    audio_path      = payload.audio or "" # type: ignore
+    image_path      = payload.capture_path or "" # type: ignore
  
     deck_name  = settings.get("anki_deck", "Test Deck")
     note_type  = settings.get("anki_note_type", "Lapis")
@@ -277,7 +281,7 @@ def add_card(payload: Word, settings) -> tuple[bool, str, int | None]:
     freq_display     = str(frequency_rank) if frequency_rank else ""
     freq_sort        = str(frequency_rank) if frequency_rank else ""
  
-    fields = {
+    fields: Dict[str, Any] = {
         "Expression":        surface,
         "ExpressionFurigana": expr_furigana,
         "ExpressionReading": reading,

@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Dict, Any
 
 
 @dataclass
@@ -55,7 +55,7 @@ class Word:
         """String representation of the Word."""
         return f"{self.surface} ({self.reading}): {self.meaning} [{self.pos}]"
     
-    def update_from_dictionary(self, lookup_result: dict) -> None:
+    def update_from_dictionary(self, lookup_result: Dict[str, Any] | None) -> None:
         """
         Updates the Word object with enriched dictionary data.
         

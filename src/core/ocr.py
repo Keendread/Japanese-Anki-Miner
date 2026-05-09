@@ -7,10 +7,11 @@ import threading
 import time
 import logging
 import warnings
+from typing import Any
 
-_ocr_model = None
-_model_lock = threading.Lock()
-_model_ready = threading.Event()
+_ocr_model: Any = None
+_model_lock: threading.Lock = threading.Lock()
+_model_ready: threading.Event = threading.Event()
 
 def _loading_spinner(stop_event: threading.Event):
     """
@@ -50,7 +51,7 @@ def preprocess(image: Image.Image) -> Image.Image:
 
     return  image
 
-def get_model():
+def get_model() -> Any:
     """Returns current used OCR model, loading it on first call."""
     global _ocr_model
     with _model_lock:
