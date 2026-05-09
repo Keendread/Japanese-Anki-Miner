@@ -9,6 +9,7 @@ import threading
 import urllib.request
 import urllib.error
 from datetime import datetime
+from src.models.word import Word
 
 def _get_data_dir() -> str:
     core_dir = os.path.dirname(os.path.abspath(__file__)) # src/core/
@@ -238,32 +239,32 @@ def _build_furigana_expression(surface: str, reading: str) -> str:
     return surface
 
 
-def add_card(payload: dict, settings) -> tuple[bool, str, int | None]:
+def add_card(payload: Word, settings) -> tuple[bool, str, int | None]:
     """
     Creates an Anki card from the full pipeline payload.
     Records the word in mined.db on success.
 
     Args:
-        payload (dict):     merged dict from parser + dictionary + audio + image
+        payload (word):     merged word from parser + dictionary + audio + image
         settings (_type_):  SettingsManager instance for deck/note type config
 
     Returns:
         tuple[bool, str, int | None]: [success: bool, message: str, note_id: int | None]
     """
-    dictionary_form = payload.get("dictionary_form", "")
-    reading         = payload.get("reading", "")
-    surface         = payload.get("surface", "")
-    sentence        = payload.get("sentence", "")
-    sentence_furi   = payload.get("sentence_furigana", "")
-    main_def        = payload.get("main_definition", "")
-    glossary        = payload.get("glossary", [])
-    pitch_pattern   = payload.get("pitch_pattern") or ""
-    pitch_category  = payload.get("pitch_category") or ""
-    frequency_rank  = payload.get("frequency_rank")
-    jlpt_level      = payload.get("jlpt_level") or ""
-    capture_path    = payload.get("capture_path")
-    audio_path      = payload.get("audio_path")
-    image_path      = payload.get("image_path")
+    dictionary_form = payload.dictionary_form
+    reading         = payload.reading
+    surface         = payload.surface
+    sentence        = payload.full_sentence or ""
+    sentence_furi   = payload.sentence_furigana or ""
+    main_def        = payload.meaning or ""
+    glossary        = payload.glossary or []
+    pitch_pattern   = payload.pitch_pattern or ""
+    pitch_category  = payload.pitch_category or ""
+    frequency_rank  = payload.frequency_rank or None
+    jlpt_level      = payload.jlpt_level or None
+    capture_path    = payload.capture_path or ""
+    audio_path      = payload.audio or ""
+    image_path      = payload.capture_path or ""
  
     deck_name  = settings.get("anki_deck", "Test Deck")
     note_type  = settings.get("anki_note_type", "Lapis")

@@ -22,12 +22,13 @@ class Word:
     capture_path: Optional[str] = None # Path to the captured image (filled in by capture.py)
 
     # NEW: Additional dictionary data
-    glossary: Optional[list[dict]] = None # All definitions with POS/domain
+    glossary: Optional[list[dict[str, str]]] = None # All definitions with POS/domain
     pitch_pattern: Optional[str] = None # Pitch accent pattern
     pitch_category: Optional[str] = None # Pitch accent type
     frequency_rank: Optional[int] = None # How common (1 = most common)
     jlpt_level: Optional[int] = None # JLPT level (1-4, N1-N4)
-    example_sentences: Optional[list[dict]] = None # Multiple examples
+    example_sentences: Optional[list[dict[str, str]]] = None # Multiple examples
+    sentence_furigana: Optional[str] = None # Furigana for the full sentence (for Anki card)
 
     def is_valid(self) -> bool:
         """
@@ -71,6 +72,7 @@ class Word:
         self.frequency_rank = lookup_result.get("frequency_rank")
         self.jlpt_level = lookup_result.get("jlpt_level")
         self.example_sentences = lookup_result.get("example_sentences")
+        self.sentence_furigana = lookup_result.get("sentence_furigana")
         
         # Use first example if available (for backward compatibility)
         if self.example_sentences and not self.example_jp:

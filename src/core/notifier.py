@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import font as tkfont
 import threading
 import os
+from src.models.word import Word
 
 class CardToast:
     """
@@ -19,10 +20,10 @@ class CardToast:
     PADDING         = 16
     MARGIN          = 12
     
-    def __init__(self, payload: dict, settings, on_confirm, on_discard):
+    def __init__(self, payload: Word, settings, on_confirm, on_discard):
         """
         Args:
-            payload (dict):         full pipeline payload (parser+dict+audio+image)
+            payload (Word):         full pipeline payload (parser+dict+audio+image)
             settings (_type_):      SettingsManager instance
             on_confirm (_type_):    callable function - called when user clicks thumbs up
             on_discard (_type_):    callable function - called on thumbs down
@@ -56,16 +57,16 @@ class CardToast:
     def _build_ui(self):
         payload = self.payload
         
-        surface         = payload.get("surface", "")
-        reading         = payload.get("reading", "")
-        pos             = payload.get("pos", "")
-        main_def        = payload.get("main_definition", "")
-        sentence        = payload.get("sentence", "")
-        pitch_pattern   = payload.get("pitch_pattern")
-        pitch_category  = payload.get("pitch_category")
-        frequency_rank  = payload.get("frequency_rank")
-        jlpt_level      = payload.get("jlpt_level")
-        examples        = payload.get("example_sentences", [])
+        surface         = payload.surface
+        reading         = payload.reading
+        pos             = payload.pos
+        main_def        = payload.meaning
+        sentence        = payload.full_sentence
+        pitch_pattern   = payload.pitch_pattern
+        pitch_category  = payload.pitch_category
+        frequency_rank  = payload.frequency_rank
+        jlpt_level      = payload.jlpt_level
+        examples        = payload.example_sentences or []
         
         outer = tk.Frame(
             self.root,
@@ -321,13 +322,13 @@ class DuplicateToast:
                 break
             
             
-def show_card_toast(payload: dict, settings, main_thread_queue, on_confirm=None, on_discard=None):
+def show_card_toast(payload: Word, settings, main_thread_queue, on_confirm=None, on_discard=None):
     """
     Posts the card preview toast to the main thread queue.
     Non-blocking - returns immediately.
 
     Args:
-        payload (dict):                 full pipeline payload
+        payload (Word):                 full pipeline payload
         settings (_type_):              SettingsManager instance
         main_thread_queue (_type_):     queue.Queue for main thread tasks
         on_confirm (_type_, optional):  callable run in background thread on thumbs up

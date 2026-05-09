@@ -1,0 +1,13 @@
+{
+    "capture_combo": [
+        "shift",
+        "a"
+    ],
+    "capture_mode": "bbox",
+    "capture_width": 200,
+    "capture_height": 60,
+    "anki_deck": "Test Deck",
+    "anki_note_type": "Lapis",
+    "anki_misc_info": "JAM",
+    "anki_media_path": ""
+}

@@ -283,32 +283,17 @@ class CaptureController:
         
         # Build final payload from Word + additional parser data
         # Map Word fields to expected anki.py field names
-        payload = {
-            "surface": word.surface,
-            "dictionary_form": word.dictionary_form,
-            "reading": word.reading,
-            "pos": word.pos,
-            "main_definition": word.meaning,
-            "glossary": word.glossary or [],
-            "pitch_pattern": word.pitch_pattern,
-            "pitch_category": word.pitch_category,
-            "frequency_rank": word.frequency_rank,
-            "jlpt_level": word.jlpt_level,
-            "example_sentences": word.example_sentences or [],
-            "sentence": word.full_sentence,
-            "sentence_furigana": parse_result.get("sentence_furigana", ""),
-            "capture_path": word.capture_path,
-        }
+        payload: Word = word
  
         # Duplicate check
         if anki.is_already_mined(
-            payload["dictionary_form"],
-            payload["reading"]
+            payload.dictionary_form,
+            payload.reading
         ):
-            print(f"[Process] Already mined: {payload['surface']}")
+            print(f"[Process] Already mined: {payload.surface}")
             notifier.show_duplicate_toast(
-                payload["surface"],
-                payload["reading"],
+                payload.surface,
+                payload.reading,
                 self.main_thread_queue
             )
             return
@@ -321,14 +306,14 @@ class CaptureController:
             if success:
                 print(f"[Anki] {message}")
                 notifier.show_success_toast(
-                    payload["surface"],
+                    payload.surface,
                     self.main_thread_queue
                 )
             else:
                 print(f"[Anki] Failed: {message}")
 
         def on_discard():
-            print(f"[Process] Discarded: {payload['surface']}")
+            print(f"[Process] Discarded: {payload.surface}")
         
         notifier.show_card_toast(
             payload,
