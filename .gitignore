@@ -133,3 +133,6 @@ coverage.xml
 # Compiled PDFs from Typst are generated, not committed
 # (comment this out if you WANT to commit the PDF)
 *.pdf
+
+# settings
+settings.json
