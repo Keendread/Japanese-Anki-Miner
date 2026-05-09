@@ -10,7 +10,7 @@ import urllib.request
 import urllib.error
 from datetime import datetime
 from typing import Optional, Dict, List, Any, Tuple
-from src.models.word import Word
+from src.models.card import Card
 
 def _get_data_dir() -> str:
     core_dir: str = os.path.dirname(os.path.abspath(__file__)) # src/core/
@@ -172,144 +172,39 @@ def is_anki_connect_available() -> bool:
         return False
     
 
-def _build_glossary_html(glossary: List[Dict[str, Any]]) -> str:
+
+
+def add_card(card: Card, settings: Dict[str, Any]) -> Tuple[bool, str, Optional[int]]:
     """
-    Builds HTML glossary from sense dictionaries.
-    Format matches Lapis's expected <ol> structure.
-
-    Args:
-        glossary: List of sense dictionaries from dictionary.py
-
-    Returns:
-        HTML string representing the glossary
-    """
-    if not glossary:
-        return ""
-
-    items: List[Any] = []
-    for sense in glossary:
-        pos = sense.get("pos", "")
-        gloss = sense.get("gloss", "")
-        domain = sense.get("domain", "")
- 
-        pos_tag = ""
-        if pos:
-            # Take first POS tag only for display
-            first_pos = pos.split(",")[0].strip()
-            pos_tag = (
-                f'<span style="font-weight:bold;font-size:0.8em;'
-                f'color:white;background-color:#565656;'
-                f'border-radius:0.3em;padding:0.2em 0.3em;'
-                f'margin-right:0.25em;">{first_pos}</span>'
-            )
- 
-        domain_tag = ""
-        if domain:
-            domain_tag = (
-                f'<span style="font-size:0.8em;color:#888;'
-                f'margin-right:0.25em;">[{domain}]</span>'
-            )
- 
-        items.append(f"<li>{pos_tag}{domain_tag}{gloss}</li>")
- 
-    return f'<div class="jam-glossary"><ol>{"".join(items)}</ol></div>'
-
-def _build_sentence_cloze(sentence: str, surface: str) -> str:
-    """
-    Wraps the targeet word in the sentence <b> tags for cloze format.
-    Lapis Sentence field format: prefix<b>word</b>suffix
-
-    Args:
-        sentence (str): full OCR sentence
-        surface (str):  target word surface form
-    """
-    if surface and surface in sentence:
-        return sentence.replace(surface, f"<b>{surface}</b>", 1)
-    return sentence
-
-def _build_furigana_expression(surface: str, reading: str) -> str:
-    """
-    Builds ExpressionFurigana in Lapis format: word[reading]
-    Only adds furgina if surface contains kanji
-
-    Args:
-        surface (str): word as it appears in text
-        reading (str): hiragana reading
-    """
-    import re
-    kanji_re = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]")
-    if kanji_re.search(surface) and reading and reading != surface:
-        return f"{surface}[{reading}]"
-    return surface
-
-
-def add_card(payload: Word, settings: Dict[str, Any]) -> Tuple[bool, str, Optional[int]]:
-    """
-    Creates an Anki card from a Word object.
+    Creates an Anki card from a Card object.
     Records the word in mined.db on success.
 
     Args:
-        payload: Word object with all enriched word data
+        card: Card object with formatted content ready for Anki
         settings: Settings dictionary with anki_deck, anki_note_type, etc.
 
     Returns:
         Tuple of (success: bool, message: str, note_id: Optional[int])
     """
-    dictionary_form = payload.dictionary_form
-    reading         = payload.reading
-    surface         = payload.surface
-    sentence        = payload.full_sentence or ""
-    sentence_furi   = payload.sentence_furigana or ""
-    main_def        = payload.meaning or ""
-    glossary        = payload.glossary or []
-    pitch_pattern   = payload.pitch_pattern or ""
-    pitch_category  = payload.pitch_category or ""
-    frequency_rank  = payload.frequency_rank or None
-    jlpt_level      = payload.jlpt_level or None # type: ignore
-    capture_path    = payload.capture_path or ""
-    audio_path      = payload.audio or "" # type: ignore
-    image_path      = payload.capture_path or "" # type: ignore
- 
-    deck_name  = settings.get("anki_deck", "Test Deck")
-    note_type  = settings.get("anki_note_type", "Lapis")
-    misc_info  = settings.get("anki_misc_info", "JAM")
+    if not card.is_valid():
+        return False, f"Card validation failed for '{card.source_word.surface}'", None
     
-    # Build Fields
-    glossary_html    = _build_glossary_html(glossary)
-    sentence_cloze   = _build_sentence_cloze(sentence, surface)
-    expr_furigana    = _build_furigana_expression(surface, reading)
-    freq_display     = str(frequency_rank) if frequency_rank else ""
-    freq_sort        = str(frequency_rank) if frequency_rank else ""
- 
-    fields: Dict[str, Any] = {
-        "Expression":        surface,
-        "ExpressionFurigana": expr_furigana,
-        "ExpressionReading": reading,
-        "MainDefinition":    main_def,
-        "Glossary":          glossary_html,
-        "Sentence":          sentence_cloze,
-        "SentenceFurigana":  sentence_furi,
-        "PitchPosition":     pitch_pattern,
-        "PitchCategories":   pitch_category,
-        "Frequency":         freq_display,
-        "FreqSort":          freq_sort,
-        "MiscInfo":          misc_info,
-        # Audio and image left empty for now — filled in by future modules
-        "ExpressionAudio":   "",
-        "SentenceAudio":     "",
-        "Picture":           "",
-        "DefinitionPicture": "",
-        "SelectionText":     surface,
-    }
+    deck_name: str = settings.get("anki_deck", "Test Deck")
+    note_type: str = settings.get("anki_note_type", "Basic")
     
-    # Add capture screenshot as Picture if available
-    if capture_path and os.path.exists(capture_path):
-        media_filename = os.path.basename(capture_path)
-        anki_media     = settings.get("anki_media_path", "")
+    # Convert Card to Anki field format
+    fields: Dict[str, str] = card.to_anki_format()
+    
+    # Handle capture image if available and Lapis model
+    capture_path: str = card.source_word.capture_path or ""
+    if note_type == "Lapis" and capture_path and os.path.exists(capture_path):
+        media_filename: str = os.path.basename(capture_path)
+        anki_media: str = settings.get("anki_media_path", "")
+        
         if anki_media:
             try:
                 import shutil
-                dest = os.path.join(anki_media, media_filename)
+                dest: str = os.path.join(anki_media, media_filename)
                 shutil.copy2(capture_path, dest)
                 fields["Picture"] = f'<img src="{media_filename}">'
             except Exception as e:
@@ -319,7 +214,7 @@ def add_card(payload: Word, settings: Dict[str, Any]) -> Tuple[bool, str, Option
             try:
                 with open(capture_path, "rb") as f:
                     import base64
-                    data = base64.b64encode(f.read()).decode()
+                    data: str = base64.b64encode(f.read()).decode()
                 _ankiconnect(
                     "storeMediaFile",
                     filename=media_filename,
@@ -328,42 +223,52 @@ def add_card(payload: Word, settings: Dict[str, Any]) -> Tuple[bool, str, Option
                 fields["Picture"] = f'<img src="{media_filename}">'
             except Exception as e:
                 print(f"[Anki] Could not store capture image via AnkiConnect: {e}")
-                
+    
     # Ensure deck exists
     try:
-        existing_decks = _ankiconnect("deckNames")
+        existing_decks: List[str] = _ankiconnect("deckNames")
         if deck_name not in existing_decks:
             _ankiconnect("createDeck", deck=deck_name)
             print(f"[Anki] Created deck '{deck_name}'.")
     except Exception as e:
         return False, f"Could not verify/create deck: {e}", None
- 
-    # Add note
+    
+    # Add note to Anki
     try:
-        note_id = _ankiconnect(
+        note_id: Optional[int] = _ankiconnect(
             "addNote",
             note={
-                "deckName":  deck_name,
+                "deckName": deck_name,
                 "modelName": note_type,
-                "fields":    fields,
+                "fields": fields,
                 "options": {
                     "allowDuplicate": False,
                     "duplicateScope": "deck",
                 },
-                "tags": ["JAM"],
+                "tags": card.tags,
             }
         )
- 
-        _record_mined(dictionary_form, reading, note_id)
-        print(f"[Anki] Card added: '{surface}' (note ID: {note_id})")
-        return True, f"Card added: {surface}", note_id
- 
+        
+        # Record in local database
+        _record_mined(
+            card.source_word.dictionary_form,
+            card.source_word.reading,
+            note_id
+        )
+        
+        print(f"[Anki] Card added: '{card.source_word.surface}' (note ID: {note_id})")
+        return True, f"Card added: {card.source_word.surface}", note_id
+    
     except RuntimeError as e:
-        error = str(e)
+        error: str = str(e)
         if "duplicate" in error.lower():
-            # Also record locally so we catch it next time without hitting Anki
-            _record_mined(dictionary_form, reading, None)
-            return False, f"Duplicate in Anki: {surface}", None
+            # Record locally so we catch it next time
+            _record_mined(
+                card.source_word.dictionary_form,
+                card.source_word.reading,
+                None
+            )
+            return False, f"Duplicate in Anki: {card.source_word.surface}", None
         return False, error, None
     except Exception as e:
         return False, str(e), None

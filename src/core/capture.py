@@ -17,6 +17,7 @@ from core import dictionary
 from core import anki
 from core import notifier
 from src.models.word import Word
+from src.models.card import Card
 
 try:
     import win32api
@@ -283,19 +284,21 @@ class CaptureController:
             print(f"[Process] Word '{word.surface}' is missing required fields.")
             return
         
-        # Build final payload from Word + additional parser data
-        # Map Word fields to expected anki.py field names
-        payload: Word = word
+        # Create Card from Word
+        card: Card = Card.from_word(word, self.settings)
+        if not card.is_valid():
+            print(f"[Process] Card creation failed for '{word.surface}'.")
+            return
  
         # Duplicate check
         if anki.is_already_mined(
-            payload.dictionary_form,
-            payload.reading
+            card.source_word.dictionary_form,
+            card.source_word.reading
         ):
-            print(f"[Process] Already mined: {payload.surface}")
+            print(f"[Process] Already mined: {card.source_word.surface}")
             notifier.show_duplicate_toast(
-                payload.surface,
-                payload.reading,
+                card.source_word.surface,
+                card.source_word.reading,
                 self.main_thread_queue
             )
             return
@@ -304,21 +307,21 @@ class CaptureController:
         settings: dict[str, Any] = self.settings
 
         def on_confirm():
-            success, message, note_id = anki.add_card(payload, settings)
+            success, message, note_id = anki.add_card(card, settings)
             if success:
                 print(f"[Anki] {message}")
                 notifier.show_success_toast(
-                    payload.surface,
+                    card.source_word.surface,
                     self.main_thread_queue
                 )
             else:
                 print(f"[Anki] Failed: {message}")
 
         def on_discard():
-            print(f"[Process] Discarded: {payload.surface}")
+            print(f"[Process] Discarded: {card.source_word.surface}")
         
         notifier.show_card_toast(
-            payload,
+            card.source_word,
             settings,
             self.main_thread_queue,
             on_confirm=on_confirm,
