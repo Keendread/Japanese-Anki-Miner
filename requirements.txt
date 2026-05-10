@@ -37,6 +37,8 @@ lxml                     # Fast XML parser for JMdict
 # ---------- AUDIO ----------
 requests                 # HTTP calls to VOICEVOX API and Yomichan audio server
 pydub                    # Audio file conversion (wav → mp3 if needed)
+aiohttp                  # Async HTTP client for concurrent audio requests to VOICEVOX
+aiofiles                 # Async file I/O for saving audio files without blocking main thread
  
 # ---------- IMAGE SOURCING ----------
 requests                 # Already listed above — used for Irasutoya, Wikimedia, Pexels
@@ -69,6 +71,7 @@ pyinstaller              # Packages the app into a single .exe for distribution
 # ---------- TESTING ----------
 pytest                   # Test runner
 pytest-cov               # Coverage reporting
+pytest-asyncio           # Async test support for audio fetching tests
  
 # ---------- EVALUATION (benchmarking scripts only) ----------
 numpy                    # Numerical ops for CER/WER calculation
