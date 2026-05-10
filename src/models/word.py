@@ -12,7 +12,6 @@ class Word:
 
     # Enriched properties from dictionary.py
     meaning: Optional[str] # English translation
-    example_jp: Optional[str] = None # Example sentence in Japanese
 
     # Optional data (from audio.py)
     audio: Optional[str] = None
@@ -34,7 +33,7 @@ class Word:
         """
         Checks if the Word has minimum valid data for Anki card creation.
         - Must have: surface, dictionary_form, reading, meaning
-        - Optional but helpful: example_jp, audio
+        - Optional but helpful: audio
         """
         # Require basic fields
         if not all([self.surface, self.dictionary_form, self.reading, self.meaning]):
@@ -73,7 +72,3 @@ class Word:
         self.jlpt_level = lookup_result.get("jlpt_level")
         self.example_sentences = lookup_result.get("example_sentences")
         self.sentence_furigana = lookup_result.get("sentence_furigana")
-        
-        # Use first example if available (for backward compatibility)
-        if self.example_sentences and not self.example_jp:
-            self.example_jp = self.example_sentences[0].get("japanese")

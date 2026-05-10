@@ -34,7 +34,7 @@ async def test_fetch_audio():
     assert audio_file3 is not None
 
     word4 = Word(surface="食べた", dictionary_form="食べる", reading="たべる", 
-            pos="動詞", meaning=None, example_jp="昨日、寿司を食べた。", sentence_furigana="きのう、すしをたべた。") # kinou, sushi o tabeta
+            pos="動詞", meaning=None, full_sentence="昨日、寿司を食べた。", sentence_furigana="きのう、すしをたべた。") # kinou, sushi o tabeta
     audio_file4: Optional[AudioFile] = await fetch_audio(word4)
     assert audio_file4 is not None
     assert audio_file4.word_audio is not None

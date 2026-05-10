@@ -5,7 +5,6 @@
 import os
 import sqlite3
 import threading
-import json
 from typing import Optional, Any
 from src.models.word import Word
 

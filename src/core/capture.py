@@ -1,11 +1,14 @@
 # Module for capturing the screen relative the cursor's current position
 # Feeds into ocr.py
 
+import asyncio
 import threading
 import queue
 import os
 from datetime import datetime
-from typing import Tuple, Any
+from typing import Tuple, Any, Optional
+
+from concurrent.futures import Future
 
 from pynput import keyboard
 from mss import mss
@@ -16,8 +19,10 @@ from core import parser
 from core import dictionary
 from core import anki
 from core import notifier
+from core import audio
 from src.models.word import Word
 from src.models.card import Card
+from src.models.audio import AudioFile
 
 try:
     import win32api
@@ -303,6 +308,20 @@ class CaptureController:
             )
             return
         
+        
+        audio_future: Future[Optional[AudioFile]] = Future()
+
+        def _run_audio():
+            try:
+                result = asyncio.run(audio.fetch_audio(card.source_word))
+                audio_future.set_result(result)
+            except Exception as e:
+                print(f"[Word] {card.source_word}")
+                print(f"[Audio] Background fetch error: {e}")
+                audio_future.set_result(None)
+
+        threading.Thread(target=_run_audio, daemon=True).start()
+
         # Show card preview toast
         settings: dict[str, Any] = self.settings
 
@@ -316,6 +335,20 @@ class CaptureController:
                 )
             else:
                 print(f"[Anki] Failed: {message}")
+
+            # apply audio when ready (if any)
+            def _apply_audio_when_ready():
+                try:
+                    audio_file = audio_future.result(timeout=30.0)
+                except Exception:
+                    audio_file = None
+                
+                if audio_file and note_id:
+                    anki.update_card_audio(note_id, audio_file)
+                else:
+                    print(f"[Audio] No audio to apply to card {note_id}.")
+
+            threading.Thread(target=_apply_audio_when_ready, daemon=True).start()
 
         def on_discard():
             print(f"[Process] Discarded: {card.source_word.surface}")

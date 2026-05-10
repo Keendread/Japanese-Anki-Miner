@@ -8,9 +8,12 @@ import sqlite3
 import threading
 import urllib.request
 import urllib.error
+import base64
+
 from datetime import datetime
 from typing import Optional, Dict, List, Any, Tuple
 from src.models.card import Card
+from src.models.audio import AudioFile
 
 def _get_data_dir() -> str:
     core_dir: str = os.path.dirname(os.path.abspath(__file__)) # src/core/
@@ -272,3 +275,44 @@ def add_card(card: Card, settings: Dict[str, Any]) -> Tuple[bool, str, Optional[
         return False, error, None
     except Exception as e:
         return False, str(e), None
+    
+def update_card_audio(note_id: int, audio_file: AudioFile) -> None:
+    """
+    Updates an existing Anki note with audio after the fact.
+    Called asynchronously after card creation since audio may take time.
+
+    Args:
+        note_id: Anki note ID to update
+        audio_file: AudioFile object with paths to word and sentence audio
+    """
+    try:
+        fields = {}
+
+        # Word audio
+        if os.path.exists(audio_file.word_audio):
+            with open(audio_file.word_audio, "rb") as f:
+                data = base64.b64encode(f.read()).decode()
+
+            media_filename = os.path.basename(audio_file.word_audio)
+            _ankiconnect("storeMediaFile", filename=media_filename, data=data)
+            fields["ExpressionAudio"] = f"[sound:{media_filename}]"
+        else:
+            print(f"[Anki] Word audio file not found: {audio_file.word_audio}")
+
+        # Sentence audio (optional)
+        if audio_file.sentence_audio and os.path.exists(audio_file.sentence_audio):
+            with open(audio_file.sentence_audio, "rb") as f:
+                data = base64.b64encode(f.read()).decode()
+            media_filename = os.path.basename(audio_file.sentence_audio)
+            _ankiconnect("storeMediaFile", filename=media_filename, data=data)
+            fields["SentenceAudio"] = f"[sound:{media_filename}]"
+
+        if not fields:
+            print(f"[Anki] No valid audio files to update for note {note_id}.")
+            return
+
+        _ankiconnect("updateNoteFields", note={"id": note_id, "fields": fields})
+        print(f"[Anki] Updated note {note_id} with audio.")
+
+    except Exception as e:
+        print(f"[Anki] Failed to update note with audio: {e}")

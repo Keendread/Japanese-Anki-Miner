@@ -3,17 +3,23 @@
 # Might require some research on how to fetch audio
 
 # Fetches audio from local VOICEVOX HTTP server and caches to disk
+# Asynchronously fetches both word and sentence audio concurrently to avoid UI blocking (might take < 5 seconds)
+# As such, audio files are saved (updated essentially) after card creation instead of during the card creation.
 
 import os
 import aiohttp
 import aiofiles
 import asyncio
+import hashlib
+
 from typing import Optional, Dict, Any
 from src.models.word import Word
 from src.models.audio import AudioFile
 
+from random import randint
+
 VOICEVOX_URL: str = "http://localhost:50021"
-VOICEVOX_SPEAKER_ID: int = 1 # Default speaker ID for VOICEVOX (can be customized by user later)
+VOICEVOX_SPEAKER_ID: int = randint(1, 120) # Default speaker ID for VOICEVOX (can be customized by user later)
 
 def _get_audio_dir() -> str:
     """
@@ -26,24 +32,14 @@ def _get_audio_dir() -> str:
     os.makedirs(audio_dir, exist_ok=True)
     return audio_dir
 
-def _sanitize_filename(text: str) -> str:
-    """
-    Converts a word to a safe filename.
-    Removes problematic characters while preserving readability.
-    """
-    # Replace path separators and other unsafe chars
-    unsafe_chars: str = r'<>:"/\|?*'
-    for char in unsafe_chars:
-        text = text.replace(char, "_")
-    return text
-
 def _get_cache_path(dictionary_form: str, reading: str) -> str:
     """
     Returns the full filesystem path for cached audio file.
-    Uses both dictionary_form and reading to ensure uniqueness.
+    Uses hash to ensure uniqueness.
     
     """
-    filename: str = f"{_sanitize_filename(dictionary_form)}_{_sanitize_filename(reading)}.wav"
+    hash_str = hashlib.sha256(f"{dictionary_form}_{reading}".encode()).hexdigest()[:16]
+    filename: str = f"vv_{hash_str}.wav"
     return os.path.join(_get_audio_dir(), filename)
 
 def _get_cached_audio(dictionary_form: str, reading: str) -> Optional[str]:
@@ -157,14 +153,22 @@ async def fetch_audio(word: Word) -> Optional[AudioFile]:
             cache_reading=word.reading,
         )
 
+        sentence_fallback: str | None = None
+        if (word.glossary and len(word.glossary) > 0):
+            sentence_fallback = word.glossary[0].get("example_jp")
+
         sentence_task = None
-        if word.example_jp:
-            assert word.sentence_furigana is not None
+        sentence = word.full_sentence or sentence_fallback
+
+        if (sentence_fallback and sentence == word.surface):
+            sentence = sentence_fallback
+            
+        if sentence:
             sentence_task = _fetch_single(
                 session,
-                text=word.example_jp,
-                cache_key=word.example_jp,
-                cache_reading=word.sentence_furigana,
+                text=sentence,
+                cache_key=sentence,
+                cache_reading=sentence,
             )
 
         # Run word and sentence concurrently
