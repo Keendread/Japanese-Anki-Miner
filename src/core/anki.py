@@ -314,5 +314,11 @@ def update_card_audio(note_id: int, audio_file: AudioFile) -> None:
         _ankiconnect("updateNoteFields", note={"id": note_id, "fields": fields})
         print(f"[Anki] Updated note {note_id} with audio.")
 
+        # Remove after saving to Anki to avoid cluttering local storage. Anki manages its own media folder.
+        if (os.path.exists(audio_file.word_audio)):
+            os.remove(audio_file.word_audio)
+        if (audio_file.sentence_audio and os.path.exists(audio_file.sentence_audio)):
+            os.remove(audio_file.sentence_audio)
+
     except Exception as e:
         print(f"[Anki] Failed to update note with audio: {e}")

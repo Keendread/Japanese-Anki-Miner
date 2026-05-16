@@ -32,24 +32,15 @@ def _get_audio_dir() -> str:
     os.makedirs(audio_dir, exist_ok=True)
     return audio_dir
 
-def _get_cache_path(dictionary_form: str, reading: str) -> str:
+def _get_path(dictionary_form: str, reading: str) -> str:
     """
-    Returns the full filesystem path for cached audio file.
+    Returns the full filesystem path for the audio file.
     Uses hash to ensure uniqueness.
     
     """
     hash_str = hashlib.sha256(f"{dictionary_form}_{reading}".encode()).hexdigest()[:16]
     filename: str = f"vv_{hash_str}.wav"
     return os.path.join(_get_audio_dir(), filename)
-
-def _get_cached_audio(dictionary_form: str, reading: str) -> Optional[str]:
-    """
-    Returns path to cached audio if it exists, None otherwise.
-    """
-    cache_path: str = _get_cache_path(dictionary_form, reading)
-    if os.path.exists(cache_path):
-        return cache_path
-    return None
 
 async def _voicevox_audio_query(session: aiohttp.ClientSession, text: str) -> Optional[Dict[str, Any]]:
     """
@@ -105,14 +96,12 @@ async def _save_audio(audio_bytes: bytes, cache_path: str) -> bool:
 
 async def _fetch_single(session: aiohttp.ClientSession, text: str, cache_key: str, cache_reading: str) -> Optional[str]:
     """
-    Reusable helper: checks cache, queries, synthesizes, saves.
+    Fetch audio from VOICEVOX: queries, synthesizes, saves to disk.
     Used for both word and sentence audio.
+    
+    Note: No cache check needed here. Since duplicate check happens before
+    audio fetching, we only fetch audio for fresh words (first time mined).
     """
-    cached = _get_cached_audio(cache_key, cache_reading)
-    if cached:
-        print(f"[Audio] Using cached audio: {cached}")
-        return cached
-
     query = await _voicevox_audio_query(session, text)
     if query is None:
         return None
@@ -121,7 +110,7 @@ async def _fetch_single(session: aiohttp.ClientSession, text: str, cache_key: st
     if audio_bytes is None:
         return None
 
-    cache_path = _get_cache_path(cache_key, cache_reading)
+    cache_path = _get_path(cache_key, cache_reading)
     if await _save_audio(audio_bytes, cache_path):
         return cache_path
 
@@ -132,10 +121,9 @@ async def fetch_audio(word: Word) -> Optional[AudioFile]:
     Main entry point: fetches word and sentence audio concurrently.
 
     Flow:
-    1. Check cache for both word and sentence
-    2. Fire off both VOICEVOX requests concurrently (asyncio.gather)
-    3. Save results to disk
-    4. Return AudioFile
+    1. Fire off both VOICEVOX requests concurrently (asyncio.gather)
+    2. Save results to disk
+    3. Return AudioFile
 
     Args:
         word: Word object
