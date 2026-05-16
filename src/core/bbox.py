@@ -42,7 +42,7 @@ class BBoxOverlay:
             screen_w // 2, 24,
             text="Click and drag to select a region. Press Esc to cancel.",
             fill="black",
-            font=("Segoe UI", 12)
+            font=("Segoe UI", 12, "bold")
         )
  
         self.canvas.bind("<Button-1>", self._on_press)

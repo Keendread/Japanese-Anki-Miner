@@ -8,6 +8,20 @@ from tkinter import font as tkfont
 import threading
 import os
 from src.models.word import Word
+import ctypes
+
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(1)
+except Exception:
+    ctypes.windll.user32.SetProcessDPIAware()
+
+def rescale(x):
+    try:
+        # Get DPI for the primary monitor (96 DPI = 100% scale)
+        dpi = ctypes.windll.user32.GetDpiForSystem()
+        return int(x * (dpi / 96.0))
+    except:
+        return x
 
 class CardToast:
     """
@@ -15,10 +29,10 @@ class CardToast:
     Shows a preview of the mined card and lets the user confirm or discard.
     """
     
-    WINDOW_WIDTH    = 380
-    WINDOW_HEIGHT   = 320
-    PADDING         = 16
-    MARGIN          = 12
+    WINDOW_WIDTH    = rescale(380)
+    WINDOW_HEIGHT   = rescale(320)
+    PADDING         = rescale(16)
+    MARGIN          = rescale(12)
     
     def __init__(self, payload: Word, settings, on_confirm, on_discard):
         """
@@ -89,7 +103,7 @@ class CardToast:
             fg="#ffffff",
             anchor="w",
             padx=p,
-            pady=8
+            pady=rescale(8)
         )
         word_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
@@ -100,11 +114,11 @@ class CardToast:
             bg="#2a2a2a",
             fg="#888888",
             bd=0,
-            padx=8,
+            padx=rescale(8),
             cursor="hand2",
-            command=self.on_discard
+            command=self._discard
         )
-        close_btn.pack(side=tk.RIGHT, pady=4)
+        close_btn.pack(side=tk.RIGHT, pady=rescale(4))
         
         meta_parts = []
         if pos:
@@ -126,7 +140,7 @@ class CardToast:
                 fg="#888888",
                 anchor="w",
                 padx=p,
-                pady=4
+                pady=rescale(4)
             )
             meta_label.pack(fill=tk.X)
             
@@ -142,7 +156,7 @@ class CardToast:
             wraplength=self.WINDOW_WIDTH - p * 2,
             justify=tk.LEFT,
             padx=p,
-            pady=6
+            pady=rescale(6)
         )
         def_label.pack(fill=tk.X)
         
@@ -157,14 +171,14 @@ class CardToast:
                 wraplength=self.WINDOW_WIDTH - p * 2,
                 justify=tk.LEFT,
                 padx=p,
-                pady=2
+                pady=rescale(2)
             )
             sent_label.pack(fill=tk.X)
             
         if examples:
             ex = examples[0]
             tk.Frame(outer, bg="#333333", height=1).pack(
-                fill=tk.X, padx=p, pady=(6, 0)
+                fill=tk.X, padx=p, pady=(rescale(6), 0)
             )
             ex_jp = tk.Label(
                 outer,
@@ -176,7 +190,7 @@ class CardToast:
                 wraplength=self.WINDOW_WIDTH - p * 2,
                 justify=tk.LEFT,
                 padx=p,
-                pady=2
+                pady=rescale(2)
             )
             ex_jp.pack(fill=tk.X)
             if ex.get("english"):
@@ -198,7 +212,7 @@ class CardToast:
 
         tk.Frame(outer, bg="#333333", height=1).pack(fill=tk.X)
 
-        btn_row = tk.Frame(outer, bg="#1e1e1e", pady=10)
+        btn_row = tk.Frame(outer, bg="#1e1e1e", pady=rescale(10))
         btn_row.pack(fill=tk.X)
 
         discard_btn = tk.Button(
@@ -210,12 +224,12 @@ class CardToast:
             activebackground="#4a2a2a",
             activeforeground="#ff6b6b",
             bd=0,
-            padx=16,
-            pady=6,
+            padx=rescale(16),
+            pady=rescale(6),
             cursor="hand2",
-            command=self.on_discard
+            command=self._discard
         )
-        discard_btn.pack(side=tk.LEFT, padx=(p, 4))
+        discard_btn.pack(side=tk.LEFT, padx=(p, rescale(4)))
  
         add_btn = tk.Button(
             btn_row,
@@ -226,12 +240,12 @@ class CardToast:
             activebackground="#2a4a2a",
             activeforeground="#6bff6b",
             bd=0,
-            padx=16,
-            pady=6,
+            padx=rescale(16),
+            pady=rescale(6),
             cursor="hand2",
             command=self._confirm
         )
-        add_btn.pack(side=tk.RIGHT, padx=(4, p))
+        add_btn.pack(side=tk.RIGHT, padx=(rescale(4), p))
         
     def _confirm(self):
         self.running = False
@@ -245,6 +259,13 @@ class CardToast:
             self.root.destroy()
         except Exception:
             pass
+        
+    def _discard(self):
+        self.running = False
+        self._close()
+        if self.on_discard:
+            threading.Thread(target=self.on_discard, daemon=True).start()
+
 
     def show(self):
         """Blocking call - runs tkinter event loop until closed."""
@@ -270,11 +291,11 @@ class DuplicateToast:
         self.root.attributes("-topmost", True)
         self.root.overrideredirect(True)
 
-        w, h =  300, 80
+        w, h =  rescale(300), rescale(80)
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
         x = sw - w - 12
-        y = sh - h -60
+        y = sh - h - 60
         self.root.geometry(f"{w}x{h}+{x}+{y}")
 
         outer = tk.Frame(
@@ -291,7 +312,7 @@ class DuplicateToast:
             font=("Segoe UI", 9, "bold"),
             bg="#2a1e00",
             fg="#ffcc44",
-            pady=8
+            pady=rescale(8)
         ).pack()
         
         tk.Label(
@@ -367,7 +388,7 @@ def show_success_toast(surface: str, main_thread_queue):
         root.attributes("-topmost", True)
         root.overrideredirect(True)
 
-        w, h = 300, 60
+        w, h = rescale(300), rescale(60)
         sw = root.winfo_screenwidth()
         sh = root.winfo_screenheight()
         root.geometry(f"{w}x{h}+{sw - w - 12}+{sh - h - 60}")
@@ -386,7 +407,7 @@ def show_success_toast(surface: str, main_thread_queue):
             font=("Segoe UI", 10, "bold"),
             bg="#1a2a1a",
             fg="#6bff6b",
-            pady=16
+            pady=rescale(16)
         ).pack()
         
         root.update()
