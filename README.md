@@ -2,13 +2,20 @@
 ## TODO (can be done in parallel, do some testing as well)  
 ### Core Functionalities:
 - capture.py
-> Do some tests on text/images/videos and see if it correctly frames an area that OCR can use to detect text
+> Will experiment on implementing a text detector which will run before the OCR so that we can subdivide
+> large regions into smaller regions, with the regions perfectly cropped onto the text (basically an
+> automatic image preprocess). Then merging these subdivisions into one image and then running OCR on it,
+> or maybe just run OCR individually on each subdivisions, and then extracting the texts and placing them
+> all into one string. This is how Google Lens works (Image -> Text Detector -> Subdivide -> Extract text)
+> This should improve MangaOCR accuracy.
 - ocr.py
 > For testing, use ICDAR 2019, Manga109 samples. Custom-made testing set will be made later.
+> **Get performance metric on the datasets.**
 - parser.py
 > For testing, use UD Japanese GSD
 > Fills in applicable information in the word.py class to organize relevant information about a term
-> Fills in applicable parts of the card.py class for later card creation 
+> Fills in applicable parts of the card.py class for later card creation
+> **Get performance metric on the datasets.**
 - dictionary.py
 > Use JMDict, but can add fallback dictionaries if you want
 > Fills in the translation/meaning part of the word.py and card.py classes
