@@ -6,7 +6,7 @@ import threading
 import queue
 import os
 from datetime import datetime
-from typing import Tuple, Any, Optional
+from typing import Tuple, Any, Optional, List
 
 from concurrent.futures import Future
 
@@ -20,9 +20,11 @@ from core import dictionary
 from core import anki
 from core import notifier
 from core import audio
+from core import image as image_module
 from src.models.word import Word
 from src.models.card import Card
 from src.models.audio import AudioFile
+from core.image import ImageCandidate
 
 try:
     import win32api
@@ -247,19 +249,19 @@ class CaptureController:
             image:    PIL Image of the capture
             filepath: path where the capture was saved (used as card context image)
         """
-        # Wait for both models — prints status if still loading
+        # 1. Wait for both models — prints status if still loading
         if not _wait_for_ready():
             print("[Process] Models not ready in time, dropping capture.")
             return
  
-        # OCR
+        # 2. OCR
         text = ocr.extract_text(image)
         if not text:
             print("[Process] OCR returned empty string, skipping.")
             return
         print(f"[Process] OCR: {text}")
  
-        # Parse
+        # 3. Parse
         parse_result = parser.parse(text)
         if parse_result is None:
             print("[Process] Parser returned no result, skipping.")
@@ -275,12 +277,11 @@ class CaptureController:
             capture_path = filepath
         )
         
-        # Dictionary Lookup
+        # 4. Dictionary Lookup
         dict_result = dictionary.lookup(word)
         if dict_result is None:
             print("[Process] No dictionary entry found, skipping.")
             return
-
         # Update Word with dictionary data
         word.update_from_dictionary(dict_result)
         
@@ -289,13 +290,13 @@ class CaptureController:
             print(f"[Process] Word '{word.surface}' is missing required fields.")
             return
         
-        # Create Card from Word
+        # 5. Card Assembly
         card: Card = Card.from_word(word, self.settings)
         if not card.is_valid():
             print(f"[Process] Card creation failed for '{word.surface}'.")
             return
  
-        # Duplicate check
+        # 6. Duplicate check
         if anki.is_already_mined(
             card.source_word.dictionary_form,
             card.source_word.reading
@@ -308,7 +309,7 @@ class CaptureController:
             )
             return
         
-        
+        # 7. Fetch Audio (Background/Asynchronous)
         audio_future: Future[Optional[AudioFile]] = Future()
 
         def _run_audio():
@@ -322,21 +323,79 @@ class CaptureController:
 
         threading.Thread(target=_run_audio, daemon=True).start()
 
-        # Show card preview toast
-        settings: dict[str, Any] = self.settings
+        # 8. Fetch Image Candidates (Background/Async)
+        image_future: Future[List[ImageCandidate]] = Future()
+        
+        def _run_image_fetch():
+            try:
+                candidates = asyncio.run(
+                    image_module.fetch_candidates(card.source_word)
+                )
+                image_future.set_result(candidates)
+            except Exception as e:
+                print(f"[Image] Background fetch error: {e}")
+                image_future.set_result([])
+        
+        threading.Thread(target=_run_image_fetch, daemon=True).start()
+        
+        # 9. Show card preview toast
+        main_queue = self.main_thread_queue
+        settings = self.settings
 
         def on_confirm():
-            success, message, note_id = anki.add_card(card, settings)
+            """
+            Runs in a background thread when user clicks 'Add to Anki'.
+ 
+            Step A — collect image candidates (wait up to 8 s).
+            Step B — show ImagePicker on main thread; block until user picks.
+            Step C — download + save chosen image to collection.media.
+            Step D — add card to Anki.
+            Step E — show success toast.
+            Step F — apply audio to card once VOICEVOX finishes.
+            """
+            # A. Collect image candidates
+            try:
+                candidates: List[ImageCandidate] = image_future.result(timeout=8.0)
+            except Exception:
+                candidates = []
+                print("[Image] Candidates not ready in time — proceeding without image.")
+ 
+            # B. Show Image Picker
+            picked_event = threading.Event()
+            picked_result: List[Optional[ImageCandidate]] = [None]
+ 
+            def on_image_selected(candidate: Optional[ImageCandidate]):
+                picked_result[0] = candidate
+                picked_event.set()
+ 
+            image_module.show_image_picker(candidates, main_queue, on_image_selected)
+ 
+            # Wait up to 60 s for the user to make a selection
+            picked_event.wait(timeout=60.0)
+            selected = picked_result[0]
+            
+            # C. Download & Save chosen image
+            image_filename: Optional[str] = None
+            if selected is not None:
+                image_filename = image_module.save_to_media(selected, card.source_word, settings)
+                if image_filename:
+                    print(f"[Image] Ready for card: {image_filename}")
+                else:
+                    print("[Image] Save failed — card will have no image.")
+                    
+            # D. Add card to Anki
+            success, message, note_id = anki.add_card(
+                card, settings, image_filename=image_filename
+            )
+            
             if success:
                 print(f"[Anki] {message}")
-                notifier.show_success_toast(
-                    card.source_word.surface,
-                    self.main_thread_queue
-                )
+                # E. Success toast
+                notifier.show_success_toast(card.source_word.surface,main_queue)
             else:
                 print(f"[Anki] Failed: {message}")
 
-            # apply audio when ready (if any)
+            # F. Apply audio when VOICEVOX finishes (if any)
             def _apply_audio_when_ready():
                 try:
                     audio_file = audio_future.result(timeout=30.0)
@@ -356,9 +415,7 @@ class CaptureController:
         notifier.show_card_toast(
             card.source_word,
             settings,
-            self.main_thread_queue,
+            main_queue,
             on_confirm=on_confirm,
-            on_discard=on_discard
+            on_discard=on_discard,
         )
- 
-        # TODO: audio.py + image.py
