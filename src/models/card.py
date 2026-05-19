@@ -35,6 +35,7 @@ class Card:
     sentence_cloze: Optional[str] = None    # Sentence with target word highlighted
     pitch_pattern: Optional[str] = None     # Pitch accent pattern
     frequency_rank: Optional[int] = None    # Word frequency ranking
+    image_filename: Optional[str] = None    # Media filename for card image
     
     @staticmethod
     def from_word(word: Word, settings: Dict[str, Any]) -> "Card":
