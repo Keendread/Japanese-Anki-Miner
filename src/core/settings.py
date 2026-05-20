@@ -15,6 +15,7 @@ DEFAULT_SETTINGS = {
     "anki_note_type":   "Lapis",
     "anki_misc_info":   "JAM",
     "anki_media_path":  "", # e.g. C:/Users/user/AppData/Roaming/Anki2/User 1/collection.media
+    "anki_profile":     "", # anki profile name (default = User 1)
 }
 
 class SettingsManager:

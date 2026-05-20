@@ -211,8 +211,9 @@ def _get_anki_media_path(settings: dict) -> str:
     path = settings.get("anki_media_path", "")
     if path and os.path.isdir(path):
         return path
-    username = os.getenv("USERNAME", "User 1")
-    return rf"C:\Users\{username}\AppData\Roaming\Anki2\User 1\collection.media"
+    username = os.getenv("USERPROFILE", os.path.expanduser("~"))
+    anki_profile = settings.get("anki_profile", "User 1")
+    return os.path.join(username, "AppData", "Roaming", "Anki2", anki_profile, "collection.media")
 
 def save_to_media(
     candidate: ImageCandidate,
@@ -262,7 +263,7 @@ def save_to_media(
     filepath = os.path.join(media_dir, filename)
 
     try:
-        with open(fielpath, "wb") as f:
+        with open(filepath, "wb") as f:
             f.write(image_bytes)
         print(f"[Image] Saved to media: {filename}")
         return filename
@@ -340,15 +341,9 @@ class ImagePicker:
         
     def _position_window(self):
         """Centers the picker on the screen."""
-        rows   = -(-len(self.candidates) // _COLS)   # ceiling division
-        grid_h = rows * (_THUMB_SIZE + _THUMB_PAD * 2 + rescale(22))
-        total_h = (
-            rescale(38)          # title bar
-            + rescale(8)         # top gap
-            + grid_h             # thumbnail rows
-            + rescale(8)         # bottom gap
-            + rescale(50)        # button row
-        )
+        self.root.update_idletasks()
+        total_h = self.root.winfo_reqheight()
+        
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
         x  = (sw - _PICKER_W) // 2

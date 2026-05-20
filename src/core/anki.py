@@ -177,7 +177,7 @@ def is_anki_connect_available() -> bool:
 
 
 
-def add_card(card: Card, settings: Dict[str, Any]) -> Tuple[bool, str, Optional[int]]:
+def add_card(card: Card, settings: Dict[str, Any], image_filename: Optional[str]) -> Tuple[bool, str, Optional[int]]:
     """
     Creates an Anki card from a Card object.
     Records the word in mined.db on success.
@@ -185,6 +185,7 @@ def add_card(card: Card, settings: Dict[str, Any]) -> Tuple[bool, str, Optional[
     Args:
         card: Card object with formatted content ready for Anki
         settings: Settings dictionary with anki_deck, anki_note_type, etc.
+        image_filename: Path to image (if exists)
 
     Returns:
         Tuple of (success: bool, message: str, note_id: Optional[int])
@@ -226,7 +227,11 @@ def add_card(card: Card, settings: Dict[str, Any]) -> Tuple[bool, str, Optional[
                 fields["Picture"] = f'<img src="{media_filename}">'
             except Exception as e:
                 print(f"[Anki] Could not store capture image via AnkiConnect: {e}")
-    
+
+    # Add irasutoya if it exists
+    if image_filename:
+        fields["Picture"] = f'<img src="{image_filename}" style="min-width:200px;min-height:150px;max-width:100%">' # use the irasutoya, what ocr captured = fallback only
+
     # Ensure deck exists
     try:
         existing_decks: List[str] = _ankiconnect("deckNames")
