@@ -43,7 +43,8 @@ aiofiles                 # Async file I/O for saving audio files without blockin
 # ---------- IMAGE SOURCING ----------
 requests                 # Already listed above — used for Irasutoya, Wikimedia, Pexels
 beautifulsoup4           # HTML parsing fallback for Irasutoya feed
- 
+bing-image-downloader    # Bing image search API (fallback to Irasutoya)
+
 # ---------- SYSTEM TRAY UI ----------
 pystray                  # System tray icon and right-click menu
 Pillow                   # Already listed — also used for tray icon rendering
