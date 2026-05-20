@@ -19,7 +19,7 @@ from src.models.audio import AudioFile
 from random import randint
 
 VOICEVOX_URL: str = "http://localhost:50021"
-VOICEVOX_SPEAKER_ID: int = randint(1, 120) # Default speaker ID for VOICEVOX (can be customized by user later)
+VOICEVOX_SPEAKER_ID: int = 3 # Default speaker ID for VOICEVOX (can be customized by user later)
 
 def _get_audio_dir() -> str:
     """
