@@ -374,6 +374,7 @@ class ImagePicker:
         self.on_select = on_select
         self.selected_idx: Optional[int] = None
         self.running = True
+        self._loader_thread: Optional[threading.Thread] = None
  
         # Keep references so GC doesn't collect PhotoImages
         self._photo_refs: List[ImageTk.PhotoImage] = []
@@ -597,7 +598,7 @@ class ImagePicker:
             
             # Download thumbnails one at a time
             for idx, candidate in enumerate(self.candidates):
-                if not self.running:  # Exit if window closed
+                if not self.running:  # Exit if window closed or closing
                     break
                 if candidate.thumbnail_data:  # Already loaded
                     continue
@@ -613,10 +614,12 @@ class ImagePicker:
                     )
                     response.raise_for_status()
                     
-                    # Update candidate with thumbnail data
-                    self.candidates[idx].thumbnail_data = response.content
-                    # Mark this thumbnail as ready to be updated (don't use root.after)
-                    self._updated_thumbnails.add(idx)
+                    # Only update if still running (window not closing)
+                    if self.running:
+                        # Update candidate with thumbnail data
+                        self.candidates[idx].thumbnail_data = response.content
+                        # Mark this thumbnail as ready to be updated (don't use root.after)
+                        self._updated_thumbnails.add(idx)
                     
                 except requests.exceptions.Timeout:
                     print(f"[Image] Thumbnail timeout ({candidate.thumbnail_url[:55]}…)")
@@ -626,8 +629,8 @@ class ImagePicker:
                     print(f"[Image] Unexpected thumbnail error: {e}")
         
         # Run in background thread so it doesn't block UI
-        thread = threading.Thread(target=load_thumbnails, daemon=True)
-        thread.start()
+        self._loader_thread = threading.Thread(target=load_thumbnails, daemon=True)
+        self._loader_thread.start()
     
     def _update_thumbnail(self, index: int):
         """Updates a thumbnail image label when the download completes."""
@@ -671,7 +674,7 @@ class ImagePicker:
                 else None
             )
             self.running = False
-            self._close()
+            # Don't call _close() here - let show() event loop handle cleanup
             if self.on_select:
                 print(f"[Image] Calling on_select callback")
                 self.on_select(result)
@@ -683,15 +686,28 @@ class ImagePicker:
     def _skip(self):
         print(f"[Image] Skipping image selection")
         self.running = False
-        self._close()
+        # Don't call _close() here - let show() event loop handle cleanup
         if self.on_select:
             self.on_select(None)
  
     def _close(self):
+        """Cleanly close the picker: stop background thread, then destroy window."""
         try:
+            # Signal background thread to stop
+            self.running = False
+            
+            # Wait for background thread to exit (max 1 second)
+            if self._loader_thread and self._loader_thread.is_alive():
+                self._loader_thread.join(timeout=1.0)
+            
+            # Now safe to destroy tkinter window
             self.root.destroy()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[Image] Error closing picker: {e}")
+            try:
+                self.root.destroy()
+            except Exception:
+                pass
         
     # Event Loop
     def show(self):
@@ -718,7 +734,14 @@ class ImagePicker:
                 # Small sleep to avoid CPU spinning
                 time.sleep(0.01)
             except tk.TclError:
+                # Window was destroyed, exit loop cleanly
                 break
+            except Exception as e:
+                print(f"[Image] Unexpected error in event loop: {e}")
+                break
+        
+        # Ensure proper cleanup when exiting
+        self._close()
             
             
 def show_image_picker(
