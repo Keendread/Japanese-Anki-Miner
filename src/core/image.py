@@ -106,37 +106,83 @@ async def _search_irasutoya(
         print(f"[Image] Irasutoya search error: {e}")
         return []
     
-def _search_duckduckgo_sync(query: str, max_results: int=6) -> List[ImageCandidate]:
+def _search_bing_sync(query: str, max_results: int=6) -> List[ImageCandidate]:
     """
-    Falls back to DuckDuckGo image search using duckduckgo-search library.
+    Falls back to Bing image search using requests + regex.
     Synchronous - called via run_in_executor so it doesn't block event loop.
     Query should be in English (uses word's meaning from dictionary)
     """
+    return _search_bing_requests(query, max_results)
+
+def _search_bing_requests(query: str, max_results: int=6) -> List[ImageCandidate]:
+    """
+    Bing image search using requests + regex to extract URLs.
+    More reliable than downloader libraries.
+    """
     try:
-        from duckduckgo_search import DDGS
- 
-        results: List[ImageCandidate] = []
-        with DDGS() as ddgs:
-            for r in ddgs.images(query, max_results=max_results):
-                img_url = r.get("image", "")
-                thumb_url = r.get("thumbnail", img_url)
-                if not img_url:
-                    continue
-                results.append(ImageCandidate(
-                    url=img_url,
-                    thumbnail_url=thumb_url,
-                    title=r.get("title", ""),
-                    source="duckduckgo",
-                ))
- 
-        print(f"[Image] DuckDuckGo: {len(results)} results for '{query}'")
-        return results
- 
+        import requests
+        from urllib.parse import quote
+        import re
+        import json
     except ImportError:
-        print("[Image] duckduckgo-search not installed — run: pip install duckduckgo-search")
+        print("[Image] requests library not available for Bing search")
         return []
+    
+    try:
+        results: List[ImageCandidate] = []
+        
+        # Construct Bing Image Search URL
+        search_url = f"https://www.bing.com/images/search?q={quote(query)}"
+        
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        
+        response = requests.get(search_url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        # Try multiple regex patterns to find image URLs
+        # Pattern 1: murl in JSON-like format
+        pattern1 = r'"murl":"([^"]+)"'
+        matches = re.findall(pattern1, response.text)
+        
+        if not matches:
+            # Pattern 2: Look for image URLs in data attributes
+            pattern2 = r'data-src="([^"]+)"'
+            matches = re.findall(pattern2, response.text)
+        
+        if not matches:
+            # Pattern 3: Look for img src attributes
+            pattern3 = r'<img[^>]*src="([^"]*\.(jpg|jpeg|png|gif|webp))"'
+            matches = re.findall(pattern3, response.text)
+            matches = [m[0] if isinstance(m, tuple) else m for m in matches]
+        
+        if not matches:
+            # Pattern 4: Look for m attribute (sometimes used for thumbnails)
+            pattern4 = r'"m":"([^"]+)"'
+            matches = re.findall(pattern4, response.text)
+        
+        # Clean up and deduplicate URLs
+        unique_urls = set()
+        for url in matches[:max_results * 2]:  # Get more than needed for filtering
+            if url and url.startswith('http'):
+                # Skip placeholder/default images
+                if 'a.thumbs.redditmedia' not in url and 'pbs.twimg' not in url:
+                    unique_urls.add(url)
+        
+        for url in list(unique_urls)[:max_results]:
+            results.append(ImageCandidate(
+                url=url,
+                thumbnail_url=url,
+                title=query,
+                source="bing",
+            ))
+        
+        print(f"[Image] Bing: {len(results)} results for '{query}'")
+        return results
+        
     except Exception as e:
-        print(f"[Image] DuckDuckGo search error: {e}")
+        print(f"[Image] Bing search error: {e}")
         return []
     
     
@@ -157,15 +203,17 @@ async def _download_thumbnail(
 async def fetch_candidates(word: Word) -> List[ImageCandidate]:
     """
     Main entry point: searches Irasutoya (JP) and DuckDuckGo (EN)
-    concurrentyl, then downloads  all thumbnails concurrently.
+    concurrently, then returns candidates immediately WITHOUT waiting
+    for all thumbnails to download.
     
-    Returns candidates with thumbnail_data filled in, Irasutoya first.
+    This allows the picker to show immediately with placeholders,
+    then thumbnails load in the background.
 
     Args:
         word (Word): surface, dictionary_form, meaning
 
     Returns:
-        List[ImageCandidate]: used for display in ImagePicker.
+        List[ImageCandidate]: candidates without thumbnail_data (will load async)
     """
     japanese_query = word.dictionary_form or word.surface
     english_query = word.meaning or word.surface
@@ -174,36 +222,19 @@ async def fetch_candidates(word: Word) -> List[ImageCandidate]:
         loop = asyncio.get_event_loop()
 
         ira_task = _search_irasutoya(japanese_query, session)
-        ddg_task = loop.run_in_executor(
-            None, _search_duckduckgo_sync, english_query
+        bing_task = loop.run_in_executor(
+            None, _search_bing_sync, english_query
         )
-        ira_results, ddg_results = await asyncio.gather(ira_task, ddg_task)
+        ira_results, bing_results = await asyncio.gather(ira_task, bing_task)
 
-        all_candidates: List[ImageCandidate] = ira_results + ddg_results
+        all_candidates: List[ImageCandidate] = ira_results + bing_results
         
         if not all_candidates:
             print(f"[Image] No candidates found for '{japanese_query}")
             return []
-        
-        thumb_tasks = [
-            _download_thumbnail(c.thumbnail_url, session)
-            for c in all_candidates
-        ]
-        thumb_bytes_list = await asyncio.gather(*thumb_tasks)
-        
-        ready: List[ImageCandidate] = []
-        for candidate, data in zip(all_candidates, thumb_bytes_list):
-            if data:
-                ready.append(ImageCandidate(
-                    url=candidate.url,
-                    thumbnail_url=candidate.thumbnail_url,
-                    title=candidate.title,
-                    source=candidate.source,
-                    thumbnail_data=data,
-                ))
                 
-    print(f"[Image] {len(ready)} candidates with thumbnails ready")
-    return ready
+    print(f"[Image] {len(all_candidates)} candidates found (thumbnails load async)")
+    return all_candidates
 
 
 def _get_anki_media_path(settings: dict) -> str:
@@ -211,7 +242,26 @@ def _get_anki_media_path(settings: dict) -> str:
     path = settings.get("anki_media_path", "")
     if path and os.path.isdir(path):
         return path
-    username = os.getenv("USERNAME", "User 1")
+    
+    # Try to find the active Anki profile's media folder
+    username = os.getenv("USERNAME", "")
+    if username:
+        anki_profiles_dir = rf"C:\Users\{username}\AppData\Roaming\Anki2"
+        if os.path.isdir(anki_profiles_dir):
+            # Look for profile directories (skip prefs21.db and other files)
+            try:
+                profiles = [d for d in os.listdir(anki_profiles_dir) 
+                           if os.path.isdir(os.path.join(anki_profiles_dir, d)) and d != "addons21"]
+                if profiles:
+                    # Use the first available profile (usually the active one)
+                    media_path = os.path.join(anki_profiles_dir, profiles[0], "collection.media")
+                    if os.path.isdir(media_path):
+                        return media_path
+            except Exception:
+                pass
+    
+    # Fallback: return the default path (caller should create it if needed)
+    username = username or "User 1"
     return rf"C:\Users\{username}\AppData\Roaming\Anki2\User 1\collection.media"
 
 def save_to_media(
@@ -262,7 +312,10 @@ def save_to_media(
     filepath = os.path.join(media_dir, filename)
 
     try:
-        with open(fielpath, "wb") as f:
+        # Ensure media directory exists
+        os.makedirs(media_dir, exist_ok=True)
+        
+        with open(filepath, "wb") as f:
             f.write(image_bytes)
         print(f"[Image] Saved to media: {filename}")
         return filename
@@ -291,12 +344,13 @@ _P            = rescale(12)    # General padding
  
 _SOURCE_BADGE = {
     "irasutoya":  ("#e85d04", "#ffffff"),   # orange bg / white text
-    "duckduckgo": ("#4285f4", "#ffffff"),   # google-blue bg / white text
+    "bing":       ("#0078d4", "#ffffff"),   # microsoft-blue bg / white text
 }
 
 class ImagePicker:
     """
     DPI-aware tkinter window displaying image candidates in a  scrollable grid.
+    Loads thumbnails asynchronously in the background for fast UI responsiveness.
     
     Layout:
         ┌─────────────────────────────────────┐
@@ -323,7 +377,9 @@ class ImagePicker:
  
         # Keep references so GC doesn't collect PhotoImages
         self._photo_refs: List[ImageTk.PhotoImage] = []
+        self._photo_labels: List[tk.Label] = []  # Keep refs to update photos
         self._thumb_cells: List[tk.Frame] = []
+        self._updated_thumbnails: set = set()  # Track which thumbnails have been updated
  
         self.root = tk.Tk()
         self.root.title("JAM — Select Image")
@@ -338,17 +394,33 @@ class ImagePicker:
         self.root.lift()
         self.root.focus_force()
         
+        # Bind keyboard shortcuts
+        self.root.bind("<Return>", lambda e: self._confirm() if self.selected_idx is not None else None)
+        self.root.bind("<Escape>", lambda e: self._skip())
+        
+        # Start background thumbnail loading after UI is ready
+        self._start_thumbnail_loader()
+        
     def _position_window(self):
-        """Centers the picker on the screen."""
-        rows   = -(-len(self.candidates) // _COLS)   # ceiling division
-        grid_h = rows * (_THUMB_SIZE + _THUMB_PAD * 2 + rescale(22))
+        """Centers the picker on the screen, with minimum size for few images."""
+        num_images = len(self.candidates)
+        rows   = max(1, -(-num_images // _COLS))   # ceiling division, at least 1
+        
+        # Calculate grid height with minimum space per row
+        min_row_h = _THUMB_SIZE + _THUMB_PAD * 2 + rescale(22)
+        grid_h = rows * min_row_h
+        
         total_h = (
             rescale(38)          # title bar
-            + rescale(8)         # top gap
+            + rescale(12)        # top gap
             + grid_h             # thumbnail rows
-            + rescale(8)         # bottom gap
-            + rescale(50)        # button row
+            + rescale(12)        # bottom gap
+            + rescale(60)        # button row (increased for visibility)
         )
+        
+        # Ensure minimum dimensions
+        total_h = max(total_h, rescale(300))
+        
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
         x  = (sw - _PICKER_W) // 2
@@ -400,9 +472,14 @@ class ImagePicker:
         # Update scroll region after all cells are placed
         def _on_grid_resize(event):
             canvas.configure(scrollregion=canvas.bbox("all"))
-            canvas.itemconfig(canvas_window, width=canvas.winfo_width())
+            # Make canvas window width match canvas for proper alignment
+            canvas_width = canvas.winfo_width()
+            if canvas_width > 1:  # Ensure canvas has been rendered
+                canvas.itemconfig(canvas_window, width=canvas_width)
  
         grid_frame.bind("<Configure>", _on_grid_resize)
+        # Also trigger resize after a short delay to ensure proper sizing
+        self.root.after(50, lambda: _on_grid_resize(None))
  
         # Mouse-wheel scrolling
         def _on_mousewheel(event):
@@ -414,8 +491,8 @@ class ImagePicker:
         tk.Frame(self.root, bg="#333333", height=1).pack(fill=tk.X, pady=(_P // 2, 0))
  
         # ── Button row ──
-        btn_row = tk.Frame(self.root, bg="#1e1e1e", pady=rescale(10))
-        btn_row.pack(fill=tk.X)
+        btn_row = tk.Frame(self.root, bg="#1e1e1e", pady=rescale(12))
+        btn_row.pack(fill=tk.X, padx=_P)
  
         tk.Button(
             btn_row,
@@ -472,6 +549,7 @@ class ImagePicker:
             bg="#2a2a2a", cursor="hand2",
         )
         img_lbl.pack(padx=rescale(4), pady=(rescale(4), 0))
+        self._photo_labels.append(img_lbl)  # Keep ref to update later
  
         # Source badge (coloured strip at the bottom of the cell)
         badge_bg, badge_fg = _SOURCE_BADGE.get(candidate.source, ("#555555", "#ffffff"))
@@ -493,7 +571,8 @@ class ImagePicker:
         try:
             if candidate.thumbnail_data:
                 img = Image.open(BytesIO(candidate.thumbnail_data))
-                img.thumbnail((_THUMB_SIZE, _THUMB_SIZE), Image.LANCZOS)
+                # Resize to thumbnail size (default resampling is fine)
+                img = img.resize((_THUMB_SIZE, _THUMB_SIZE))
                 photo = ImageTk.PhotoImage(img)
                 self._photo_refs.append(photo)
                 return photo
@@ -506,29 +585,103 @@ class ImagePicker:
         self._photo_refs.append(photo)
         return photo
     
+    def _start_thumbnail_loader(self):
+        """Starts a background thread to download thumbnails asynchronously."""
+        def load_thumbnails():
+            import time
+            try:
+                import requests
+            except ImportError:
+                print("[Image] requests library not available for thumbnail loading")
+                return
+            
+            # Download thumbnails one at a time
+            for idx, candidate in enumerate(self.candidates):
+                if not self.running:  # Exit if window closed
+                    break
+                if candidate.thumbnail_data:  # Already loaded
+                    continue
+                
+                try:
+                    # Add small delay between downloads to avoid overwhelming servers
+                    time.sleep(0.2)
+                    
+                    response = requests.get(
+                        candidate.thumbnail_url, 
+                        timeout=5,
+                        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+                    )
+                    response.raise_for_status()
+                    
+                    # Update candidate with thumbnail data
+                    self.candidates[idx].thumbnail_data = response.content
+                    # Mark this thumbnail as ready to be updated (don't use root.after)
+                    self._updated_thumbnails.add(idx)
+                    
+                except requests.exceptions.Timeout:
+                    print(f"[Image] Thumbnail timeout ({candidate.thumbnail_url[:55]}…)")
+                except requests.exceptions.RequestException as e:
+                    print(f"[Image] Thumbnail fetch failed ({candidate.thumbnail_url[:55]}…): {e}")
+                except Exception as e:
+                    print(f"[Image] Unexpected thumbnail error: {e}")
+        
+        # Run in background thread so it doesn't block UI
+        thread = threading.Thread(target=load_thumbnails, daemon=True)
+        thread.start()
+    
+    def _update_thumbnail(self, index: int):
+        """Updates a thumbnail image label when the download completes."""
+        if index >= len(self._photo_labels) or index >= len(self.candidates):
+            return
+        
+        candidate = self.candidates[index]
+        if candidate.thumbnail_data:
+            try:
+                photo = self._make_photo(candidate)
+                self._photo_labels[index].configure(image=photo)
+                print(f"[Image] Thumbnail updated: {index + 1}/{len(self.candidates)}")
+            except Exception as e:
+                print(f"[Image] Failed to update thumbnail {index}: {e}")
+    
+    def _update_pending_thumbnails(self):
+        """Check for newly downloaded thumbnails and update UI."""
+        for idx in list(self._updated_thumbnails):
+            self._update_thumbnail(idx)
+            self._updated_thumbnails.discard(idx)
+    
     # Image Selection
     def _select(self, index: int):
         """Highlights the clicked cell and enables the confirm button."""
+        print(f"[Image] Image selected: {index + 1}/{len(self.candidates)}")
         for i, cell in enumerate(self._thumb_cells):
             cell.configure(
                 highlightbackground="#6bff6b" if i == index else "#2a2a2a"
             )
         self.selected_idx = index
         self._confirm_btn.configure(state=tk.NORMAL, bg="#1a4a1a")
+        print(f"[Image] Confirm button enabled. Now click 'Add Selected' button to confirm.")
         
     # Actions (Buttons)
     def _confirm(self):
-        result = (
-            self.candidates[self.selected_idx]
-            if self.selected_idx is not None
-            else None
-        )
-        self.running = False
-        self._close()
-        if self.on_select:
-            self.on_select(result)
+        print(f"[Image] Confirming selection: {self.selected_idx}")
+        try:
+            result = (
+                self.candidates[self.selected_idx]
+                if self.selected_idx is not None
+                else None
+            )
+            self.running = False
+            self._close()
+            if self.on_select:
+                print(f"[Image] Calling on_select callback")
+                self.on_select(result)
+        except Exception as e:
+            print(f"[Image] Error in _confirm: {e}")
+            import traceback
+            traceback.print_exc()
  
     def _skip(self):
+        print(f"[Image] Skipping image selection")
         self.running = False
         self._close()
         if self.on_select:
@@ -546,9 +699,24 @@ class ImagePicker:
         Blocking: drives the tkinter event loop manually until the user
         picks an image or skips. Same pattern as CardToast.show().
         """
+        import time
         while self.running:
             try:
-                self.root.update()
+                # Check for newly downloaded thumbnails and update UI
+                self._update_pending_thumbnails()
+                
+                # Process GUI events multiple times for better responsiveness
+                for _ in range(10):
+                    if not self.running:  # Check if user clicked a button
+                        break
+                    try:
+                        self.root.update()
+                    except tk.TclError:
+                        self.running = False
+                        break
+                
+                # Small sleep to avoid CPU spinning
+                time.sleep(0.01)
             except tk.TclError:
                 break
             

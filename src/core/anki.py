@@ -177,7 +177,7 @@ def is_anki_connect_available() -> bool:
 
 
 
-def add_card(card: Card, settings: Dict[str, Any]) -> Tuple[bool, str, Optional[int]]:
+def add_card(card: Card, settings: Dict[str, Any], image_filename: Optional[str] = None) -> Tuple[bool, str, Optional[int]]:
     """
     Creates an Anki card from a Card object.
     Records the word in mined.db on success.
@@ -185,6 +185,7 @@ def add_card(card: Card, settings: Dict[str, Any]) -> Tuple[bool, str, Optional[
     Args:
         card: Card object with formatted content ready for Anki
         settings: Settings dictionary with anki_deck, anki_note_type, etc.
+        image_filename: Optional media filename for downloaded/selected image
 
     Returns:
         Tuple of (success: bool, message: str, note_id: Optional[int])
@@ -198,34 +199,38 @@ def add_card(card: Card, settings: Dict[str, Any]) -> Tuple[bool, str, Optional[
     # Convert Card to Anki field format
     fields: Dict[str, str] = card.to_anki_format()
     
-    # Handle capture image if available and Lapis model
-    capture_path: str = card.source_word.capture_path or ""
-    if note_type == "Lapis" and capture_path and os.path.exists(capture_path):
-        media_filename: str = os.path.basename(capture_path)
-        anki_media: str = settings.get("anki_media_path", "")
-        
-        if anki_media:
-            try:
-                import shutil
-                dest: str = os.path.join(anki_media, media_filename)
-                shutil.copy2(capture_path, dest)
-                fields["Picture"] = f'<img src="{media_filename}">'
-            except Exception as e:
-                print(f"[Anki] Could not copy capture image: {e}")
-        else:
-            # Use AnkiConnect storeMediaFile as fallback
-            try:
-                with open(capture_path, "rb") as f:
-                    import base64
-                    data: str = base64.b64encode(f.read()).decode()
-                _ankiconnect(
-                    "storeMediaFile",
-                    filename=media_filename,
-                    data=data
-                )
-                fields["Picture"] = f'<img src="{media_filename}">'
-            except Exception as e:
-                print(f"[Anki] Could not store capture image via AnkiConnect: {e}")
+    # Handle image if provided (from user selection or download) - PRIORITY 1
+    if image_filename and note_type == "Lapis":
+        fields["Picture"] = f'<img src="{image_filename}">'
+    # Handle capture image only if no fetched image was provided - PRIORITY 2
+    elif note_type == "Lapis":
+        capture_path: str = card.source_word.capture_path or ""
+        if capture_path and os.path.exists(capture_path):
+            media_filename: str = os.path.basename(capture_path)
+            anki_media: str = settings.get("anki_media_path", "")
+            
+            if anki_media:
+                try:
+                    import shutil
+                    dest: str = os.path.join(anki_media, media_filename)
+                    shutil.copy2(capture_path, dest)
+                    fields["Picture"] = f'<img src="{media_filename}">'
+                except Exception as e:
+                    print(f"[Anki] Could not copy capture image: {e}")
+            else:
+                # Use AnkiConnect storeMediaFile as fallback
+                try:
+                    with open(capture_path, "rb") as f:
+                        import base64
+                        data: str = base64.b64encode(f.read()).decode()
+                    _ankiconnect(
+                        "storeMediaFile",
+                        filename=media_filename,
+                        data=data
+                    )
+                    fields["Picture"] = f'<img src="{media_filename}">'
+                except Exception as e:
+                    print(f"[Anki] Could not store capture image via AnkiConnect: {e}")
     
     # Ensure deck exists
     try:

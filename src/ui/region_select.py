@@ -1,1 +1,0 @@
-# Uses Tkinter for image selection
