@@ -22,6 +22,7 @@ pywin32                  # Windows API — precise cursor position, window info
 # ---------- OCR ----------
 manga-ocr                # Japanese OCR via Vision Transformer (pulls torch + transformers)
 torchvision
+easyocr
 
 # ---------- JAPANESE NLP ----------
 sudachipy                # Japanese morphological analyzer
