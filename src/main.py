@@ -1,4 +1,4 @@
-# Entry point of the applications
+# Entry point of the application
 # Wires everything together
 
 import sys
@@ -6,6 +6,8 @@ import os
 import time
 import threading
 import queue
+import webbrowser
+import subprocess
 
 SRC_DIR  = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(SRC_DIR)
@@ -19,9 +21,12 @@ from core import ocr
 from core import parser
 from core import dictionary
 from core import anki
+from ui.tray import TrayManager
 from pynput import keyboard
 
 main_thread_queue = queue.Queue()
+_should_exit = False
+_tray_manager: TrayManager = None
 
 def check_dependencies():
     """
@@ -93,6 +98,36 @@ def update_combo(new_settings):
     capture.set_combo(new_combo)
     print(f"[Settings] Hotkey updated to {new_settings['capture_combo']}")
 
+def on_show_settings():
+    """Called when 'Settings' is clicked in tray menu."""
+    print("[Tray] Settings clicked")
+    # TODO: Open settings window if one exists
+    # For now, just print a message
+
+def on_open_logs():
+    """Called when 'View Logs' is clicked in tray menu."""
+    print("[Tray] View Logs clicked")
+    # Try to open logs directory or file
+    log_file = os.path.join(ROOT_DIR, "jam.log")
+    logs_dir = os.path.join(ROOT_DIR, "logs")
+    
+    try:
+        if os.path.isdir(logs_dir):
+            os.startfile(logs_dir)
+        elif os.path.isfile(log_file):
+            os.startfile(log_file)
+        else:
+            print("[Tray] No logs found")
+    except Exception as e:
+        print(f"[Tray] Could not open logs: {e}")
+
+def on_quit_requested():
+    """Called when 'Exit' is clicked in tray menu."""
+    global _should_exit
+    print("[Tray] Quit requested")
+    _should_exit = True
+    capture.stop()
+
 # STARTUP
 
 print("=" * 50)
@@ -126,21 +161,44 @@ def _sync_anki():
     
 threading.Thread(target=_sync_anki, daemon=True).start()
 
- 
+# Start capture listener
 print(f"[Startup] Hotkey: {settings.get('capture_combo')}")
 print(f"[Startup] Capture mode: {settings.get('capture_mode', 'bbox')}")
-print("[Startup] Press Ctrl+C or Q to quit.")
+print("[Startup] Starting system tray icon...")
 print("-" * 50)
 
 capture.start()
 
-while True:
+# Start system tray in a background thread
+_tray_manager = TrayManager(
+    on_show_settings=on_show_settings,
+    on_open_logs=on_open_logs,
+    on_quit=on_quit_requested,
+)
+tray_thread = threading.Thread(target=_tray_manager.run, daemon=False)
+tray_thread.start()
+
+print("[Startup] JAM is running in system tray.")
+
+# Main event loop
+while not _should_exit:
     try:
         task = main_thread_queue.get_nowait()
         task()
     except queue.Empty:
         pass
     except KeyboardInterrupt:
+        print("\n[Shutdown] Ctrl+C detected")
         break
     time.sleep(0.05)
- 
+
+# Cleanup
+print("[Shutdown] Stopping capture listener...")
+capture.stop()
+
+print("[Shutdown] Stopping system tray...")
+if _tray_manager:
+    _tray_manager.stop()
+
+print("[Shutdown] Goodbye!")
+sys.exit(0)
