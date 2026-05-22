@@ -15,6 +15,24 @@ try:
 except Exception:
     ctypes.windll.user32.SetProcessDPIAware()
 
+
+def _ensure_tk_root():
+    root = tk._default_root
+    if root is None:
+        root = tk.Tk()
+        root.withdraw()
+    return root
+
+
+def _create_toplevel(title: str) -> tk.Toplevel:
+    root = _ensure_tk_root()
+    window = tk.Toplevel(root)
+    window.title(title)
+    window.resizable(False, False)
+    window.attributes("-topmost", True)
+    window.overrideredirect(True)
+    return window
+
 def rescale(x):
     try:
         # Get DPI for the primary monitor (96 DPI = 100% scale)
@@ -48,11 +66,7 @@ class CardToast:
         self.on_discard = on_discard
         self.running    = True
 
-        self.root = tk.Tk()
-        self.root.title("JAM - Card Preview")
-        self.root.resizable(False, False)
-        self.root.attributes("-topmost", True)
-        self.root.overrideredirect(True)
+        self.root = _create_toplevel("JAM - Card Preview")
 
         self._build_ui()
         self._position_window()
@@ -283,13 +297,10 @@ class DuplicateToast:
     """
     
     def __init__(self, surface: str, reading: str):
-        self.root = tk.Tk()
+        self.root = _create_toplevel("JAM")
         self.running = True
 
         self.root.title("JAM")
-        self.root.resizable(False, False)
-        self.root.attributes("-topmost", True)
-        self.root.overrideredirect(True)
 
         w, h =  rescale(300), rescale(80)
         sw = self.root.winfo_screenwidth()
@@ -355,8 +366,13 @@ def show_card_toast(payload: Word, settings, main_thread_queue, on_confirm=None,
         on_confirm (_type_, optional):  callable run in background thread on thumbs up
         on_discard (_type_, optional):  callable run in background thread on thumbs down
     """
+    import logging
+    logging.info(f"[Notifier] Posting card toast for {payload.surface} to main queue")
+    
     def _show():
+        logging.debug(f"[Notifier] Creating CardToast for {payload.surface}")
         toast = CardToast(payload, settings, on_confirm, on_discard)
+        logging.info(f"[Notifier] Showing CardToast for {payload.surface}")
         toast.show()
 
     main_thread_queue.put(_show)
@@ -371,8 +387,13 @@ def show_duplicate_toast(surface: str, reading: str, main_thread_queue):
         reading (str):              hiragana reading
         main_thread_queue (_type_): queue.Queue for main thread tasks
     """
+    import logging
+    logging.info(f"[Notifier] Posting duplicate toast: {surface} ({reading})")
+    
     def _show():
+        logging.debug(f"[Notifier] Creating DuplicateToast for {surface}")
         toast = DuplicateToast(surface, reading)
+        logging.info(f"[Notifier] Showing DuplicateToast for {surface}")
         toast.show()
 
     main_thread_queue.put(_show)
@@ -382,12 +403,12 @@ def show_success_toast(surface: str, main_thread_queue):
     Brief success notification after card is added.
     Reuses DuplicateToast structure with green styling.
     """
+    import logging
+    logging.info(f"[Notifier] Posting success toast for {surface}")
+    
     def _show():
-        root = tk.Tk()
-        root.resizable(False, False)
-        root.attributes("-topmost", True)
-        root.overrideredirect(True)
-
+        logging.debug(f"[Notifier] Creating success toast for {surface}")
+        root = _create_toplevel("JAM")
         w, h = rescale(300), rescale(60)
         sw = root.winfo_screenwidth()
         sh = root.winfo_screenheight()
@@ -410,12 +431,14 @@ def show_success_toast(surface: str, main_thread_queue):
             pady=rescale(16)
         ).pack()
         
+        logging.info(f"[Notifier] Success toast displayed for {surface}")
         root.update()
-        root.after(2500, lambda: (root.quit(), root.destroy()))
+        root.after(2500, lambda: (setattr(root, "_closed", True), root.destroy()))
 
-        try:
-            root.mainloop()
-        except Exception:
-            pass
+        while True:
+            try:
+                root.update()
+            except tk.TclError:
+                break
 
     main_thread_queue.put(_show)

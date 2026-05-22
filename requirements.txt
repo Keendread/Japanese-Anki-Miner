@@ -7,12 +7,12 @@
 #   - Anki desktop app:       https://apps.ankiweb.net
 #   - AnkiConnect add-on:     https://ankiweb.net/shared/info/2055492159
 #   - VOICEVOX:               https://voicevox.hiroshiba.jp
-#   - Local Audio Server:     Anki add-on 1045800357
 # ============================================================
  
 # ---------- SCREEN CAPTURE ----------
 mss                      # Fast cross-platform screen capture
 Pillow                   # Image processing, cropping, format conversion
+opencv-python           # Text region detection for multi-word capture mode (bbox & screen)
  
 # ---------- GLOBAL HOTKEYS & CURSOR ----------
 pynput                   # Global hotkey listener (works outside focused window)
@@ -48,23 +48,6 @@ bing-image-downloader    # Bing image search API (fallback to Irasutoya)
 # ---------- SYSTEM TRAY UI ----------
 pystray                  # System tray icon and right-click menu
 Pillow                   # Already listed — also used for tray icon rendering
- 
-# ---------- REGION SELECT OVERLAY ----------
-# tkinter is built into Python's standard library — no pip install needed
- 
-# ---------- TOAST NOTIFICATIONS ----------
-plyer                    # Cross-platform desktop notifications / toast popups
- 
-# ---------- DATABASE ----------
-# sqlite3 is built into Python's standard library — no pip install needed
- 
-# ---------- WORD FREQUENCY / JLPT CLASSIFICATION ----------
-# Frequency list lookup is handled via a local JSON file (no extra library needed)
-# If you use rapidfuzz for fuzzy word matching against the frequency list:
-rapidfuzz                # Fast fuzzy string matching (optional, for frequency lookup)
- 
-# ---------- CONCURRENCY (parallel audio + image fetch) ----------
-# concurrent.futures is built into Python's standard library — no pip install needed
  
 # ---------- PACKAGING ----------
 pyinstaller              # Packages the app into a single .exe for distribution

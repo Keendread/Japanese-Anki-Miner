@@ -1,8 +1,16 @@
 import json
 import os
 import threading
+import sys
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# When packaged as a frozen executable (PyInstaller/etc.), the application
+# bundle location is not writable. Use a user-writable config directory
+# (e.g. %USERPROFILE%\.jam) for settings when frozen.
+if getattr(sys, "frozen", False):
+    BASE_DIR = os.path.join(os.path.expanduser("~"), ".jam")
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 SETTINGS_FILE = os.path.join(BASE_DIR, "settings.json")
 
 DEFAULT_SETTINGS = {
@@ -51,6 +59,24 @@ class SettingsManager:
             callback(self._settings)
             
     def _save_to_disk(self):
+        # Ensure the target directory exists (fixes bundled exe paths)
+        try:
+            os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
+        except Exception:
+            # If for some reason the bundle location is not writable (frozen exe),
+            # fall back to a user-writable config location.
+            if getattr(sys, "frozen", False):
+                user_dir = os.path.join(os.path.expanduser("~"), ".jam")
+                try:
+                    os.makedirs(user_dir, exist_ok=True)
+                    fallback = os.path.join(user_dir, "settings.json")
+                    with open(fallback, "w", encoding="utf-8") as f:
+                        json.dump(self._settings, f, indent=4, ensure_ascii=False)
+                    return
+                except Exception:
+                    pass
+            raise
+
         with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
             json.dump(self._settings, f, indent=4, ensure_ascii=False)
 

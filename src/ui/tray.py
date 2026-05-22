@@ -5,6 +5,7 @@ import os
 import sys
 import threading
 import pystray
+import logging
 from PIL import Image, ImageDraw
 from typing import Callable, Optional
 
@@ -84,19 +85,41 @@ class TrayManager:
     
     def _on_settings(self, icon, item):
         """Called when 'Settings' is clicked."""
-        self.on_show_settings()
+        logging.info("[Tray] Settings menu clicked - invoking callback")
+        try:
+            self.on_show_settings()
+            logging.info("[Tray] Settings callback executed successfully")
+        except Exception as e:
+            logging.error(f"[Tray] Settings callback failed: {e}", exc_info=True)
     
     def _on_logs(self, icon, item):
         """Called when 'View Logs' is clicked."""
-        self.on_open_logs()
+        logging.info("[Tray] View Logs menu clicked - invoking callback")
+        try:
+            self.on_open_logs()
+            logging.info("[Tray] Logs callback executed successfully")
+        except Exception as e:
+            logging.error(f"[Tray] Logs callback failed: {e}", exc_info=True)
     
     def _on_quit(self, icon, item):
         """Called when 'Exit' is clicked."""
+        logging.info("[Tray] Exit menu clicked - invoking callback")
         print("[Tray] User requested exit.")
-        self.is_running = False
-        self.on_quit()
+        try:
+            self.is_running = False
+            self.on_quit()
+            logging.info("[Tray] Quit callback executed successfully")
+        except Exception as e:
+            logging.error(f"[Tray] Quit callback failed: {e}", exc_info=True)
+        
         if self.icon:
-            self.icon.stop()
+            # Schedule stop in a separate thread to avoid blocking pystray event loop
+            def _stop_icon():
+                import time
+                time.sleep(0.1)  # Give callback time to return
+                if self.icon:
+                    self.icon.stop()
+            threading.Thread(target=_stop_icon, daemon=True).start()
     
     def run(self):
         """
@@ -116,6 +139,7 @@ class TrayManager:
         )
         
         print("[Tray] System tray icon started.")
+        logging.info("[Tray] System tray icon started with context menu")
         self.icon.run()
     
     def stop(self):
@@ -124,21 +148,16 @@ class TrayManager:
             self.is_running = False
             self.icon.stop()
 
+    def notify(self, title: str, message: str, duration: int = 5000):
+        """Show a tray notification if supported."""
+        if not self.icon:
+            return
+        try:
+            self.icon.notify(message, title)
+        except Exception:
+            try:
+                import ctypes
+                ctypes.windll.user32.MessageBoxW(0, message, title, 0x40)
+            except Exception as e:
+                print(f"[Tray] Notification failed: {e}")
 
-def show_tray_balloon(title: str, message: str, duration: int = 5000):
-    """
-    Shows a balloon notification in the tray.
-    
-    Args:
-        title: Notification title
-        message: Notification message
-        duration: Display duration in milliseconds (default: 5s)
-    
-    Note: Requires Windows and an active tray icon.
-    """
-    try:
-        # This requires the tray icon to be running
-        # Implementation depends on the active icon instance
-        pass
-    except Exception as e:
-        print(f"[Tray] Balloon notification failed: {e}")
