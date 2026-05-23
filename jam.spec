@@ -2,123 +2,148 @@
 # PyInstaller spec file for JAM (Japanese Anki Miner)
 # Build with: pyinstaller jam.spec
 #
-# Features to include:
-# - All src/ modules (core, models, ui, main.py)
-# - build_db.py for dictionary database creation
-# - External package data files (sudachipy, manga_ocr)
+# Portable layout (everything next to JAM.exe):
+#   JAM.exe
+#   data/
+#     audio/        ← generated at runtime
+#     jmdict.db     ← built on first run via build_db.py
+#     mined.db      ← created at runtime
+#   settings.json   ← created on first run
+#   _internal/      ← PyInstaller runtime + bundled packages
 
 import os
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
 block_cipher = None
 
-# Project directories
+# ── Project directories ───────────────────────────────────────────────────────
 ROOT_DIR = os.path.dirname(os.path.abspath(SPEC))
-SRC_DIR = os.path.join(ROOT_DIR, 'src')
-DATA_DIR = os.path.join(ROOT_DIR, 'data')
+SRC_DIR  = os.path.join(ROOT_DIR, "src")
+DATA_DIR = os.path.join(ROOT_DIR, "data")
+ASSETS_DIR = os.path.join(ROOT_DIR, "assets")
 
 print("[PyInstaller] Building JAM from spec...")
-print(f"[PyInstaller] ROOT_DIR: {ROOT_DIR}")
-print(f"[PyInstaller] SRC_DIR: {SRC_DIR}")
-print(f"[PyInstaller] DATA_DIR: {DATA_DIR}")
+print(f"[PyInstaller] ROOT_DIR : {ROOT_DIR}")
+print(f"[PyInstaller] SRC_DIR  : {SRC_DIR}")
+print(f"[PyInstaller] DATA_DIR : {DATA_DIR}")
+
+# ── Icon ──────────────────────────────────────────────────────────────────────
+_icon_path = os.path.join(ASSETS_DIR, "icon.ico")
+ICON = _icon_path if os.path.isfile(_icon_path) else None
+if ICON:
+    print(f"[PyInstaller] Icon      : {ICON}")
+else:
+    print("[PyInstaller] Icon      : none (add assets/icon.ico to enable)")
 
 # ============================================================================
 # DATA FILES
 # ============================================================================
 datas = []
 
-# 1. Collect external package data files (required for functionality)
+# 1. External package data (sudachipy, manga_ocr) ─────────────────────────────
 print("[PyInstaller] Collecting external package data files...")
-sudachi_data = collect_data_files('sudachipy')
-manga_ocr_data = collect_data_files('manga_ocr')
+sudachi_data  = collect_data_files("sudachipy")
+manga_ocr_data = collect_data_files("manga_ocr")
 datas += sudachi_data
 datas += manga_ocr_data
-print(f"[PyInstaller] - sudachipy data files: {len(sudachi_data)} entries")
-print(f"[PyInstaller] - manga_ocr data files: {len(manga_ocr_data)} entries")
+print(f"[PyInstaller]   sudachipy  : {len(sudachi_data)} entries")
+print(f"[PyInstaller]   manga_ocr  : {len(manga_ocr_data)} entries")
 
-# 2. Include only build_db.py from data/ folder (NOT prebuilt databases or cached audio)
-# We explicitly exclude: jmdict.db, mined.db, audio/, raw/, __pycache__
-print("[PyInstaller] Adding data folder files...")
-build_db_py = os.path.join(DATA_DIR, 'build_db.py')
-data_init_py = os.path.join(DATA_DIR, '__init__.py')
+# 2. data/build_db.py — bundled so the app can build jmdict.db on first run.
+#    We copy ONLY the files we explicitly list; never the whole data/ folder,
+#    so that local jmdict.db / mined.db / audio/ / raw/ are never baked in.
+print("[PyInstaller] Adding data/build_db.py ...")
+_build_db = os.path.join(DATA_DIR, "build_db.py")
+_data_init = os.path.join(DATA_DIR, "__init__.py")
 
-if os.path.isfile(build_db_py):
-    # Add the data directory itself to ensure folder structure is created
-    # PyInstaller will copy all files from DATA_DIR to the 'data' folder in the bundle
-    datas.append((DATA_DIR, 'data'))
-    print(f"[PyInstaller] - Added: data/ folder with build_db.py and __init__.py")
+if os.path.isfile(_build_db):
+    # Destination inside the bundle is the 'data' sub-folder (maps to
+    # sys._MEIPASS/data at runtime, NOT the user-writable data/ folder).
+    datas.append((_build_db, "data"))
+    print("[PyInstaller]   Added: data/build_db.py")
 else:
-    print(f"[PyInstaller] WARNING: build_db.py not found at {build_db_py}")
-    print(f"[PyInstaller] WARNING: data folder will not be included in bundle")
+    print(f"[PyInstaller]   WARNING: {_build_db} not found — skipping")
 
-# Note: PyInstaller will include everything in DATA_DIR, but files are only in source repo if they:
-# - Are part of the version control (.git tracked)
-# - Actually exist in data/ directory
-# The following DO NOT exist in the source (intentionally):
-# - jmdict.db (built on first run)
-# - mined.db (created at runtime)
-# - audio/ (not part of distribution - VOICEVOX generates on-demand)
-# - raw/ (raw source files, not needed in distribution)
+if os.path.isfile(_data_init):
+    datas.append((_data_init, "data"))
+    print("[PyInstaller]   Added: data/__init__.py")
+
+# Files intentionally NOT bundled (created/managed at runtime next to the exe):
+#   data/jmdict.db   — built on first launch by build_db.py
+#   data/mined.db    — created at runtime
+#   data/audio/      — generated by VOICEVOX on demand
+#   data/raw/        — source files only needed during dictionary build
+#   src/core/settings.json — written at runtime next to the exe
 
 # ============================================================================
 # HIDDEN IMPORTS
 # ============================================================================
-# Packages not automatically detected by PyInstaller's module scanner
 print("[PyInstaller] Setting up hidden imports...")
 
 hiddenimports = [
-    # External packages that need to be explicitly included
-    'sudachipy',
-    'sudachidict_full',
-    'manga_ocr',
-    'PIL',
-    'pystray',
-    'pynput',
-    'aiohttp',
-    'lxml',
-    'cv2',                # opencv-python for text region detection
-    
-    # JAM internal modules (to ensure they're all included)
-    'core.anki',
-    'core.audio',
-    'core.bbox',
-    'core.capture',
-    'core.detector',      # Multi-word region detection
-    'core.dictionary',
-    'core.image',
-    'core.notifier',
-    'core.ocr',
-    'core.parser',
-    'core.settings',
-    'models.audio',
-    'models.card',
-    'models.word',
-    'ui.settings_window',
-    'ui.tray',
-    'ui.word_selector',   # Multi-word selection UI
+    # ── External packages ─────────────────────────────────────────────────────
+    "sudachipy",
+    "sudachidict_full",
+    "manga_ocr",
+    "PIL",
+    "pystray",
+    "pynput",
+    "aiohttp",
+    "lxml",
+    "cv2",           # opencv-python
+
+    # tkinter — used by notifier.py for all toast windows.
+    # PyInstaller does not collect it automatically on Windows; must be explicit.
+    "tkinter",
+    "tkinter.ttk",
+    "_tkinter",
+
+    # ── JAM internal modules ──────────────────────────────────────────────────
+    "core.anki",
+    "core.audio",
+    "core.bbox",
+    "core.capture",
+    "core.detector",
+    "core.dictionary",
+    "core.image",
+    "core.notifier",
+    "core.ocr",
+    "core.parser",
+    "core.settings",
+    "models.audio",
+    "models.card",
+    "models.word",
+    "ui.settings_window",
+    "ui.tray",
+    "ui.word_selector",
 ]
 
-# pynput loads backend modules dynamically, so include its submodules
+# pynput discovers its backend modules at runtime via importlib — collect all.
 print("[PyInstaller] Collecting pynput submodules...")
-pynput_subs = collect_submodules('pynput')
-pynput_kb_subs = collect_submodules('pynput.keyboard')
-pynput_mouse_subs = collect_submodules('pynput.mouse')
-hiddenimports += pynput_subs + pynput_kb_subs + pynput_mouse_subs
-print(f"[PyInstaller] - Added {len(pynput_subs)} pynput submodules")
+_pynput_subs = (
+    collect_submodules("pynput")
+    + collect_submodules("pynput.keyboard")
+    + collect_submodules("pynput.mouse")
+)
+hiddenimports += _pynput_subs
+print(f"[PyInstaller]   Added {len(_pynput_subs)} pynput submodules")
 
 # ============================================================================
 # ANALYSIS
 # ============================================================================
-print("[PyInstaller] Starting PyInstaller Analysis...")
+print("[PyInstaller] Starting Analysis...")
 a = Analysis(
-    ['src/main.py'],  # Entry point
-    pathex=[ROOT_DIR, SRC_DIR],  # Python path for imports
+    ["src/main.py"],
+    pathex=[ROOT_DIR, SRC_DIR],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    excludedimports=[],
+    excludes=[
+        "unittest",
+        "test",
+    ],
     win_private_assemblies=False,
     win_no_prefer_redirects=False,
     cipher=block_cipher,
@@ -126,9 +151,9 @@ a = Analysis(
 )
 
 print("[PyInstaller] Analysis complete")
-print(f"[PyInstaller] - Pure Python modules: {len(a.pure)}")
-print(f"[PyInstaller] - Binaries: {len(a.binaries)}")
-print(f"[PyInstaller] - Data files: {len(a.datas)}")
+print(f"[PyInstaller]   Pure Python modules : {len(a.pure)}")
+print(f"[PyInstaller]   Binaries            : {len(a.binaries)}")
+print(f"[PyInstaller]   Data files          : {len(a.datas)}")
 
 # ============================================================================
 # PACKAGING
@@ -140,17 +165,17 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='JAM',
+    name="JAM",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
-    console=False,  # No console window (runs as system tray app)
+    upx=False,          # UPX corrupts _tkinter.pyd and Tcl/Tk DLLs on Windows
+    console=False,      # No console window — system tray app
     disable_windowed_traceback=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,  # TODO: Add path to .ico file if available
+    icon=ICON,          # None until assets/icon.ico is added
 )
 
 coll = COLLECT(
@@ -159,9 +184,9 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,          # UPX corrupts _tkinter.pyd and Tcl/Tk DLLs on Windows
     upx_exclude=[],
-    name='JAM',
+    name="JAM",
 )
 
-print("[PyInstaller] Spec file complete")
+print("[PyInstaller] Spec complete — run: pyinstaller jam.spec")

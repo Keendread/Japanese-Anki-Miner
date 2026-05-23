@@ -1,42 +1,20 @@
+# src/ui/word_selector.py
+#
 # DPI-aware tkinter window for selecting multiple words to mine at once.
-# Appears after whole-screen or bbox capture when multiple text regions
-# are detected. Already-mined words (from mined.db via anki.is_already_mined)
-# are shown but grayed out with a "✓ mined" badge so the user knows
-# what's new vs what they already have.
-#
-# Layout:
-#   ┌────────────────────────────────────────────────────────┐
-#   │  Select words to mine  ·  12 found  ·  3 new          │  title
-#   ├────────────────────────────────────────────────────────┤
-#   │  ☑  東京     とうきょう   noun   Tokyo, capital of JP  │
-#   │  ☑  行く     いく         verb   to go, to move        │
-#   │  ─  猫       ねこ         noun   cat            ✓mined │  grayed
-#   │  ☑  食べる   たべる       verb   to eat                │
-#   │  ...                                                   │  scrollable
-#   ├────────────────────────────────────────────────────────┤
-#   │  [Deselect All]              [Mine Selected (N)]       │  buttons
-#   └────────────────────────────────────────────────────────┘
-#
-# Calling convention (from capture.py):
-#   show_word_selector(entries, main_thread_queue, on_confirm)
-#
-# on_confirm receives a list[WordEntry] of the entries the user checked.
- 
+# Uses the same blocking show() pattern as CardToast in notifier.py —
+# the main thread stays inside show() while the window is open, processing
+# events via root.update() in a loop. No pump() or global state needed.
+
 from __future__ import annotations
- 
+
 import ctypes
-import threading
 import tkinter as tk
-import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, List, Optional
- 
+
 from src.models.word import Word
 
-_log = logging.getLogger(__name__)
- 
 # ─── DPI Awareness ────────────────────────────────────────────────────────────
-# Same pattern as notifier.py and image.py.
 try:
     ctypes.windll.shcore.SetProcessDpiAwareness(1)
 except Exception:
@@ -44,10 +22,9 @@ except Exception:
         ctypes.windll.user32.SetProcessDPIAware()
     except Exception:
         pass
- 
- 
+
+
 def rescale(x: int) -> int:
-    """Scales a pixel value by the system DPI (96 DPI = 100% = no scaling)."""
     try:
         dpi = ctypes.windll.user32.GetDpiForSystem()
         return int(x * (dpi / 96.0))
@@ -55,102 +32,104 @@ def rescale(x: int) -> int:
         return x
 
 
-def _ensure_tk_root():
-    """Return an existing Tk root or create one (withdrawn)."""
-    root = tk._default_root
-    if root is None:
-        root = tk.Tk()
-        root.withdraw()
-    return root
- 
- 
 # ─── Entry Data Class ─────────────────────────────────────────────────────────
- 
+
 @dataclass
 class WordEntry:
-    """
-    One row in the word selector list.
-    Wraps a Word object with UI-level state (selected, is_mined).
-    """
-    word:      Word
-    is_mined:  bool = False          # True → grayed out, checkbox disabled
-    selected:  bool = True           # Default: checked (unmined words auto-selected)
- 
+    """One row in the word selector. Wraps a Word with UI-level state."""
+    word:     Word
+    is_mined: bool = False   # grayed out, checkbox disabled
+    selected: bool = True    # pre-checked for unmined words
+
     @property
     def display_surface(self) -> str:
         return self.word.surface or "—"
- 
+
     @property
     def display_reading(self) -> str:
         return self.word.reading or ""
- 
+
     @property
     def display_pos(self) -> str:
         return self.word.pos or ""
- 
+
     @property
     def display_meaning(self) -> str:
         return self.word.meaning or "(no definition)"
- 
- 
-# ─── Word Selector UI ─────────────────────────────────────────────────────────
- 
-# Layout constants (all rescaled for DPI)
+
+
+# ─── Layout constants ─────────────────────────────────────────────────────────
+
 _WIN_W    = rescale(580)
 _ROW_H    = rescale(48)
-_MAX_ROWS = 8                        # rows visible before scroll kicks in
-_P        = rescale(12)              # general padding
- 
- 
+_MAX_ROWS = 8      # visible rows before scrollbar appears
+_P        = rescale(12)
+
+
+# ─── Word Selector UI ─────────────────────────────────────────────────────────
+
 class WordSelectorUI:
     """
-    Scrollable list of detected words with checkboxes.
-    Mined words are shown grayed with a badge but cannot be selected.
-    Non-blocking: creates a Toplevel on the main thread and pumps via main loop.
+    Scrollable word list with checkboxes.
+
+    Lifecycle (same as CardToast):
+        ui = WordSelectorUI(entries, on_confirm)
+        ui.show()          # blocks main thread until user confirms / closes
+        # on_confirm(selected_entries) is called before show() returns
     """
- 
+
     def __init__(
         self,
         entries:    List[WordEntry],
         on_confirm: Callable[[List[WordEntry]], None],
     ):
-        try:
-            self.entries    = entries
-            self.on_confirm = on_confirm
-            self.running    = True
-            self._ui_built  = False  # Defer UI building to first pump()
+        self.entries    = entries
+        self.on_confirm = on_confirm
+        self.running    = True
+        self._vars: List[tk.BooleanVar] = []
+        self._mine_btn: Optional[tk.Button] = None
 
-            # One BooleanVar per entry drives the checkbox state
-            self._vars: List[tk.BooleanVar] = []
+        # Fresh Tk() — same pattern as CardToast in notifier.py
+        self.root = tk.Tk()
+        self.root.title("JAM — Select Words to Mine")
+        self.root.resizable(False, True)
+        self.root.attributes("-topmost", True)
+        self.root.configure(bg="#1e1e1e")
+        self.root.protocol("WM_DELETE_WINDOW", self._on_window_close)
 
-            # Use Toplevel attached to root to avoid multiple Tk instances
-            self.root = tk.Toplevel(_ensure_tk_root())
-            self.root.title("JAM — Select Words to Mine")
-            self.root.resizable(False, True)
-            self.root.attributes("-topmost", True)
-            self.root.configure(bg="#1e1e1e")
+        self._build_ui()
+        self._position_window()
 
-            # Handle window close (X button) — call on_confirm with empty list
-            self.root.protocol("WM_DELETE_WINDOW", self._on_window_close)
+        self.root.update()
+        self.root.lift()
+        self.root.focus_force()
 
-            print(f"[Selector.__init__] Toplevel created, deferring UI build to first pump()...")
-            print(f"[Selector.__init__] Constructor completed successfully!")
-        except Exception as e:
-            print(f"[Selector.__init__] CRITICAL ERROR: {e}")
-            _log.error(f"[Selector.__init__] CRITICAL ERROR: {e}", exc_info=True)
+    # ── Event loop (blocking, same pattern as CardToast.show()) ──────────────
+
+    def show(self):
+        """
+        Blocks the calling thread (main thread) until the user confirms or
+        closes. Calls on_confirm before returning so the caller can act on
+        the selection synchronously.
+        """
+        while self.running:
             try:
-                self.root.destroy()
-            except Exception:
-                pass
-            raise
- 
+                self.root.update()
+            except tk.TclError:
+                break
+
+    # ── Layout ────────────────────────────────────────────────────────────────
+
+    def _position_window(self):
+        visible = min(len(self.entries), _MAX_ROWS)
+        win_h   = rescale(40) + visible * _ROW_H + rescale(8) + rescale(52)
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        self.root.geometry(f"{_WIN_W}x{win_h}+{(sw-_WIN_W)//2}+{(sh-win_h)//2}")
+
     def _build_ui(self):
         new_count   = sum(1 for e in self.entries if not e.is_mined)
         total_count = len(self.entries)
-        print(f"[Selector] Building UI with {total_count} total entries, {new_count} new")
-        _log.info(f"[Selector] Building UI with {total_count} total entries, {new_count} new")
-        for i, e in enumerate(self.entries):
-            print(f"[Selector]   Entry {i}: surface={e.display_surface}, reading={e.display_reading}, mined={e.is_mined}")
 
         # ── Title bar ──
         title_bar = tk.Frame(self.root, bg="#2a2a2a", pady=rescale(8))
@@ -160,16 +139,14 @@ class WordSelectorUI:
             title_bar,
             text="Select words to mine",
             font=("Segoe UI", 10, "bold"),
-            bg="#2a2a2a", fg="#ffffff",
-            padx=_P,
+            bg="#2a2a2a", fg="#ffffff", padx=_P,
         ).pack(side=tk.LEFT)
 
         tk.Label(
             title_bar,
             text=f"{total_count} found  ·  {new_count} new",
             font=("Segoe UI", 8),
-            bg="#2a2a2a", fg="#888888",
-            padx=_P,
+            bg="#2a2a2a", fg="#888888", padx=_P,
         ).pack(side=tk.RIGHT)
 
         # ── Scrollable list ──
@@ -182,38 +159,48 @@ class WordSelectorUI:
             highlightthickness=0,
             height=_ROW_H * min(len(self.entries), _MAX_ROWS),
         )
-        scrollbar = tk.Scrollbar(
-            list_frame, orient=tk.VERTICAL, command=canvas.yview
-        )
+        scrollbar = tk.Scrollbar(list_frame, orient=tk.VERTICAL, command=canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
+
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         inner = tk.Frame(canvas, bg="#1e1e1e")
-        canvas.create_window((0, 0), window=inner, anchor="nw")
 
-        def _update_scroll(event):
+        # Save the canvas window ID so we can resize inner to match canvas.
+        # Without this, inner has no width and fill=tk.X on each row renders 0px wide.
+        canvas_win = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        # When the canvas is resized (e.g. window resize), keep inner width in sync.
+        # This is what makes fill=tk.X on rows actually fill the visible area.
+        def _on_canvas_resize(event):
+            canvas.itemconfig(canvas_win, width=event.width)
+
+        canvas.bind("<Configure>", _on_canvas_resize)
+
+        # Update scroll region whenever inner's content changes
+        def _on_inner_resize(event):
             canvas.configure(scrollregion=canvas.bbox("all"))
 
-        inner.bind("<Configure>", _update_scroll)
+        inner.bind("<Configure>", _on_inner_resize)
 
-        # Mouse-wheel scrolling
-        canvas.bind_all(
-            "<MouseWheel>",
-            lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"),
-        )
+        # Bind mousewheel to the root window so it works regardless of
+        # which widget the mouse is hovering over.
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-        # Build one row per entry
-        print(f"[Selector] Creating {len(self.entries)} rows...")
+        self.root.bind("<MouseWheel>", _on_mousewheel)
+
+        # Build rows
         for i, entry in enumerate(self.entries):
-            print(f"[Selector]   Creating row {i}: {entry.display_surface}")
-            try:
-                var = tk.BooleanVar(value=entry.selected and not entry.is_mined)
-                self._vars.append(var)
-                self._build_row(inner, entry, var, i)
-            except Exception as e:
-                print(f"[Selector]   ERROR building row {i}: {e}")
-                _log.error(f"[Selector] Error building row {i}: {e}", exc_info=True)
+            var = tk.BooleanVar(value=entry.selected and not entry.is_mined)
+            var.trace_add("write", self._update_mine_button)
+            self._vars.append(var)
+            self._build_row(inner, entry, var, i)
+
+        # Force scroll region calculation after all rows are packed
+        inner.update_idletasks()
+        canvas.configure(scrollregion=canvas.bbox("all"))
 
         # ── Divider ──
         tk.Frame(self.root, bg="#444444", height=1).pack(fill=tk.X)
@@ -221,7 +208,7 @@ class WordSelectorUI:
         # ── Button row ──
         btn_row = tk.Frame(self.root, bg="#2a2a2a", pady=rescale(8))
         btn_row.pack(fill=tk.X)
- 
+
         tk.Button(
             btn_row,
             text="Deselect All",
@@ -232,7 +219,7 @@ class WordSelectorUI:
             cursor="hand2",
             command=self._deselect_all,
         ).pack(side=tk.LEFT, padx=(_P, rescale(4)))
- 
+
         tk.Button(
             btn_row,
             text="Select All New",
@@ -243,7 +230,7 @@ class WordSelectorUI:
             cursor="hand2",
             command=self._select_all_new,
         ).pack(side=tk.LEFT, padx=rescale(4))
- 
+
         self._mine_btn = tk.Button(
             btn_row,
             text=f"Mine Selected  ({new_count})",
@@ -255,11 +242,7 @@ class WordSelectorUI:
             command=self._confirm,
         )
         self._mine_btn.pack(side=tk.RIGHT, padx=(_P, _P))
- 
-        # Update button label whenever a checkbox changes
-        for var in self._vars:
-            var.trace_add("write", self._update_mine_button)
- 
+
     def _build_row(
         self,
         parent: tk.Frame,
@@ -267,215 +250,129 @@ class WordSelectorUI:
         var:    tk.BooleanVar,
         index:  int,
     ):
-        """Builds one entry row: checkbox | surface | reading | pos | meaning | badge."""
-        print(f"[Selector._build_row] Building row {index}: surface={entry.display_surface}, reading={entry.display_reading}")
-        # Alternate row background for readability
-        row_bg = "#1e1e1e" if index % 2 == 0 else "#252525"
-        fg     = "#555555" if entry.is_mined else "#dddddd"
-        sfg    = "#444444" if entry.is_mined else "#aaaaaa"   # secondary text
- 
-        row = tk.Frame(parent, bg=row_bg, height=_ROW_H)
+        # Colour constants — match CardToast green/red in notifier.py
+        _BG_SEL   = "#1a3a1a";  _FG_SEL   = "#6bff6b";  _SFG_SEL   = "#4aaa4a"
+        _BG_UNSEL = "#3a1a1a";  _FG_UNSEL = "#ff6b6b";  _SFG_UNSEL = "#aa4a4a"
+        _BG_MINED = "#1e2a1e";  _FG_MINED = "#4a8a4a";  _SFG_MINED = "#3a6a3a"
+
+        row = tk.Frame(parent, height=_ROW_H)
         row.pack(fill=tk.X)
-        row.pack_propagate(False)   # enforce fixed height
- 
-        # Checkbox (disabled + unchecked for mined words)
-        cb = tk.Checkbutton(
-            row,
-            variable=var,
-            bg=row_bg,
-            activebackground=row_bg,
-            state=tk.DISABLED if entry.is_mined else tk.NORMAL,
-            cursor="hand2" if not entry.is_mined else "arrow",
-        )
-        cb.pack(side=tk.LEFT, padx=(rescale(8), 0))
- 
-        # Surface form (largest text)
-        tk.Label(
-            row,
-            text=entry.display_surface,
-            font=("Segoe UI", 11),
-            bg=row_bg, fg=fg,
-            width=6, anchor="w",
-        ).pack(side=tk.LEFT, padx=(rescale(4), 0))
- 
-        # Reading
-        tk.Label(
-            row,
-            text=entry.display_reading,
-            font=("Segoe UI", 9),
-            bg=row_bg, fg=sfg,
-            width=10, anchor="w",
-        ).pack(side=tk.LEFT, padx=rescale(4))
- 
-        # POS tag (small badge style)
+        row.pack_propagate(False)
+
+        # Tick — rendered as a label so we fully own the visual state.
+        tick_lbl = tk.Label(row, font=("Segoe UI", 11), width=2, anchor="center",
+                            cursor="arrow" if entry.is_mined else "hand2")
+        tick_lbl.pack(side=tk.LEFT, padx=(rescale(8), 0))
+
+        lbl_surface = tk.Label(row, text=entry.display_surface,
+                               font=("Segoe UI", 11), width=6, anchor="w")
+        lbl_surface.pack(side=tk.LEFT, padx=(rescale(4), 0))
+
+        lbl_reading = tk.Label(row, text=entry.display_reading,
+                               font=("Segoe UI", 9), width=10, anchor="w")
+        lbl_reading.pack(side=tk.LEFT, padx=rescale(4))
+
+        lbl_pos = None
         if entry.display_pos:
-            tk.Label(
-                row,
-                text=entry.display_pos[:6],   # truncate long POS names
-                font=("Segoe UI", 7),
-                bg="#333333" if not entry.is_mined else "#2a2a2a",
-                fg="#aaaaaa",
-                padx=rescale(4), pady=rescale(1),
-            ).pack(side=tk.LEFT, padx=rescale(2))
- 
-        # Meaning (fills remaining space)
-        tk.Label(
-            row,
-            text=entry.display_meaning,
-            font=("Segoe UI", 8),
-            bg=row_bg, fg=sfg,
-            anchor="w",
-            wraplength=rescale(180),
-            justify=tk.LEFT,
-        ).pack(side=tk.LEFT, padx=rescale(6), fill=tk.X, expand=True)
- 
-        # "✓ mined" badge on the right for already-mined words
+            lbl_pos = tk.Label(row, text=entry.display_pos[:6],
+                               font=("Segoe UI", 7), fg="#aaaaaa",
+                               padx=rescale(4), pady=rescale(1))
+            lbl_pos.pack(side=tk.LEFT, padx=rescale(2))
+
+        lbl_meaning = tk.Label(row, text=entry.display_meaning,
+                               font=("Segoe UI", 8), anchor="w",
+                               wraplength=rescale(180), justify=tk.LEFT)
+        lbl_meaning.pack(side=tk.LEFT, padx=rescale(6), fill=tk.X, expand=True)
+
         if entry.is_mined:
-            tk.Label(
-                row,
-                text="✓ mined",
-                font=("Segoe UI", 7, "bold"),
-                bg="#1a2a1a", fg="#4a8a4a",
-                padx=rescale(5), pady=rescale(2),
-            ).pack(side=tk.RIGHT, padx=(_P, rescale(8)))
- 
-        # Click anywhere on the row (except badge) to toggle checkbox
+            tk.Label(row, text="✓ mined", font=("Segoe UI", 7, "bold"),
+                     bg="#1a2a1a", fg="#4a8a4a",
+                     padx=rescale(5), pady=rescale(2),
+                     ).pack(side=tk.RIGHT, padx=(_P, rescale(8)))
+
+        def _refresh(*_):
+            if entry.is_mined:
+                bg, fg, sfg, tick = _BG_MINED, _FG_MINED, _SFG_MINED, "✓"
+            elif var.get():
+                bg, fg, sfg, tick = _BG_SEL,   _FG_SEL,   _SFG_SEL,   "☑"
+            else:
+                bg, fg, sfg, tick = _BG_UNSEL,  _FG_UNSEL,  _SFG_UNSEL,  "☐"
+            row.configure(bg=bg)
+            tick_lbl.configure(bg=bg, fg=fg,  text=tick)
+            lbl_surface.configure(bg=bg, fg=fg)
+            lbl_reading.configure(bg=bg, fg=sfg)
+            lbl_meaning.configure(bg=bg, fg=sfg)
+            if lbl_pos:
+                lbl_pos.configure(bg=bg)
+
+        _refresh()
+        var.trace_add("write", _refresh)
+
         if not entry.is_mined:
-            def _on_row_click(_e, v=var):
-                print(f"[Selector._build_row] Row clicked, toggling checkbox")
-                try:
-                    current = v.get()
-                    print(f"[Selector._build_row] Current value: {current}, setting to {not current}")
-                    v.set(not current)
-                    print(f"[Selector._build_row] Checkbox toggled successfully")
-                except Exception as e:
-                    print(f"[Selector._build_row] Error toggling checkbox: {e}")
-                    _log.error(f"[Selector._build_row] Error: {e}")
-            
-            for widget in row.winfo_children():
-                if not isinstance(widget, tk.Checkbutton):
-                    widget.bind("<Button-1>", _on_row_click)
-            row.bind("<Button-1>", _on_row_click)
- 
+            def _toggle(_e, v=var): v.set(not v.get())
+            row.bind("<Button-1>", _toggle)
+            for child in row.winfo_children():
+                child.bind("<Button-1>", _toggle)
+
     # ── Button actions ────────────────────────────────────────────────────────
- 
+
     def _deselect_all(self):
         for var in self._vars:
             var.set(False)
- 
+        self._update_mine_button()
+
     def _select_all_new(self):
         for var, entry in zip(self._vars, self.entries):
             if not entry.is_mined:
                 var.set(True)
- 
+        self._update_mine_button()
+
     def _update_mine_button(self, *_):
-        """Keeps the 'Mine Selected (N)' label in sync with checkbox state."""
-        count = sum(v.get() for v in self._vars)
-        self._mine_btn.configure(text=f"Mine Selected  ({count})")
- 
+        if self._mine_btn:
+            count = sum(v.get() for v in self._vars)
+            self._mine_btn.configure(text=f"Mine Selected  ({count})")
+
+    # ── Close actions ─────────────────────────────────────────────────────────
+
     def _confirm(self):
         selected = [
             entry for entry, var in zip(self.entries, self._vars)
             if var.get() and not entry.is_mined
         ]
-        self.running = False
-        # Prevent double-invocation
-        cb = self.on_confirm
-        self.on_confirm = None
-        try:
-            self.root.after(0, self._close)
-        except Exception:
-            pass
-        if cb:
-            cb(selected)
-    
+        self._finish(selected)
+
     def _on_window_close(self):
-        """Handle X button close — call on_confirm with empty selection."""
-        _log.info("[Selector] Window closed via X button")
-        print("[Selector] Window closed via X button")
+        """User closed the window via the X button — treat as empty selection."""
+        self._finish([])
+
+    def _finish(self, selected: List[WordEntry]):
+        """
+        Common exit path for confirm and close.
+        Sets running=False (which exits show()'s loop), destroys the window,
+        then dispatches on_confirm to a background thread.
+
+        The callback must NOT run on the main thread: it calls
+        _run_card_flow(blocking=True), which posts card toasts to the
+        main_thread_queue and then blocks waiting for them to resolve.
+        If it ran on the main thread the queue would never be pumped,
+        the toasts would never appear, and the wait would time out.
+        """
+        import threading
         self.running = False
-        # Prevent double-invocation
         cb = self.on_confirm
-        self.on_confirm = None
-        try:
-            self.root.after(0, self._close)
-        except Exception:
-            pass
+        self.on_confirm = None   # prevent double-invocation
+        self._close()
         if cb:
-            cb([])  # Empty selection if closed without confirming
- 
+            threading.Thread(target=cb, args=(selected,), daemon=True).start()
+
     def _close(self):
         try:
             self.root.destroy()
         except Exception:
             pass
- 
-    # ── Event loop ────────────────────────────────────────────────────────────
- 
-    def show(self):
-        """Blocking — drives tkinter manually until user confirms or closes."""
-        # Deprecated: legacy blocking show. Use pump() via main loop instead.
-        import time
-        while self.running:
-            try:
-                self.root.update()
-            except tk.TclError:
-                break
-            time.sleep(0.01)
-        self._close()
-    
-    def pump(self):
-        """Perform a single pump iteration; safe to call from main loop."""
-        if not self.running:
-            return
-        try:
-            # Only process if window still exists
-            if not self.root.winfo_exists():
-                print(f"[Selector.pump] Window no longer exists, stopping")
-                self.running = False
-                return
-            
-            # On first pump, build the UI
-            if not self._ui_built:
-                print(f"[Selector.pump] First pump - building UI...")
-                self._build_ui()
-                
-                # Position window
-                visible_rows = min(len(self.entries), _MAX_ROWS)
-                win_h = (
-                    rescale(40)                    # title bar
-                    + visible_rows * _ROW_H        # row list
-                    + rescale(8)                   # gap
-                    + rescale(52)                  # button row
-                )
-                sw = self.root.winfo_screenwidth()
-                sh = self.root.winfo_screenheight()
-                x  = (sw - _WIN_W) // 2
-                y  = (sh - win_h)  // 2
-                self.root.geometry(f"{_WIN_W}x{win_h}+{x}+{y}")
-                
-                # Show window
-                self.root.lift()
-                self.root.focus_force()
-                self._ui_built = True
-                print(f"[Selector.pump] UI built and window shown")
-            
-            # Non-blocking event processing: process all pending events without blocking
-            # Use update() which processes all events, unlike update_idletasks()
-            self.root.update()
-        except tk.TclError as e:
-            print(f"[Selector.pump] TclError: {e}")
-            self.running = False
-        except Exception as e:
-            print(f"[Selector.pump] Error: {e}")
-            _log.error(f"[Selector.pump] Error: {e}", exc_info=True)
-            self.running = False
- 
- 
-# ─── Public API ───────────────────────────────────────────────────────────────
- 
-_ACTIVE_SELECTOR: Optional[WordSelectorUI] = None
 
+
+# ─── Public API ───────────────────────────────────────────────────────────────
 
 def show_word_selector(
     entries:          List[WordEntry],
@@ -484,52 +381,21 @@ def show_word_selector(
 ):
     """
     Posts the WordSelectorUI to the main thread queue.
- 
-    If entries is empty (no new words detected), on_confirm([]) is called
-    immediately so the caller never blocks.
- 
+    Behaves identically to show_card_toast() — blocking on the main thread
+    while the window is visible, returning after the user confirms or closes.
+
     Args:
-        entries:          List of WordEntry from the detection pipeline.
+        entries:           List of WordEntry from _build_word_entries().
         main_thread_queue: queue.Queue owned by main.py.
-        on_confirm:       Called with the list of checked WordEntry objects.
+        on_confirm:        Called with the list of checked WordEntry objects.
+                           Called with [] if the window is closed without confirming.
     """
     def _show():
-        try:
-            if not entries:
-                print("[Selector] No entries to show.")
-                on_confirm([])
-                return
-            print(f"[Selector] Creating WordSelectorUI with {len(entries)} entries...")
-            ui = WordSelectorUI(entries, on_confirm=on_confirm)
-            # Store active selector so main loop can pump it
-            global _ACTIVE_SELECTOR
-            _ACTIVE_SELECTOR = ui
-            print(f"[Selector] WordSelectorUI created successfully, stored as _ACTIVE_SELECTOR")
-        except Exception as e:
-            print(f"[Selector._show] ERROR: {e}")
-            _log.error(f"[Selector._show] ERROR: {e}", exc_info=True)
+        if not entries:
+            print("[Selector] No entries — skipping.")
             on_confirm([])
- 
+            return
+        ui = WordSelectorUI(entries, on_confirm=on_confirm)
+        ui.show()   # blocks until user confirms or closes (same as CardToast)
+
     main_thread_queue.put(_show)
-
-
-def pump_pending_selector_once():
-    """Called from main loop to pump active word selector if any."""
-    global _ACTIVE_SELECTOR
-    selector = _ACTIVE_SELECTOR
-    if selector is None:
-        return
-    try:
-        selector.pump()
-        if not selector.running:
-            # Selector finished
-            print(f"[pump_pending_selector_once] Selector finished, clearing _ACTIVE_SELECTOR")
-            _ACTIVE_SELECTOR = None
-    except Exception as e:
-        print(f"[pump_pending_selector_once] Error: {e}")
-        _log.error(f"[Selector] pump error: {e}", exc_info=True)
-        try:
-            selector._close()
-        except Exception:
-            pass
-        _ACTIVE_SELECTOR = None

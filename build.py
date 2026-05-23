@@ -4,252 +4,281 @@ Build script for JAM (Japanese Anki Miner)
 Creates a standalone Windows executable with system tray icon.
 
 Usage:
-    python build.py          # Build executable
-    python build.py --clean  # Clean build artifacts
-    python build.py --dev    # Build with console for debugging
+    python build.py             # Build executable
+    python build.py --clean     # Clean build artifacts then build
+    python build.py --dev       # Build with console window for debugging
+    python build.py --skip-deps # Skip pip dependency check
+    python build.py --no-shortcut # Skip desktop shortcut creation
 """
 
 import os
+import re
 import sys
 import subprocess
 import shutil
 import argparse
 from pathlib import Path
 
-# Directories
-ROOT_DIR = Path(__file__).parent
-DIST_DIR = ROOT_DIR / "dist"
+# ── Directories ───────────────────────────────────────────────────────────────
+ROOT_DIR  = Path(__file__).parent
+DIST_DIR  = ROOT_DIR / "dist"
 BUILD_DIR = ROOT_DIR / "build"
 SPEC_FILE = ROOT_DIR / "jam.spec"
+APP_DIR   = DIST_DIR / "JAM"          # PyInstaller COLLECT output folder
+EXE_PATH  = APP_DIR / "JAM.exe"
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _run(cmd: list, **kwargs) -> subprocess.CompletedProcess:
+    """Run a subprocess, inheriting stdout/stderr so output is visible."""
+    return subprocess.run(cmd, **kwargs)
+
+
+# ── Steps ─────────────────────────────────────────────────────────────────────
 
 def clean():
-    """Remove build artifacts."""
-    print("🧹 Cleaning build artifacts...")
+    """Remove build artefacts."""
+    print("🧹 Cleaning build artefacts...")
     for directory in [DIST_DIR, BUILD_DIR, ROOT_DIR / ".pytest_cache"]:
         if directory.exists():
             shutil.rmtree(directory)
             print(f"   Removed: {directory}")
-    
-    # Remove .spec cache files
-    for spec_cache in ROOT_DIR.glob("*.spec"):
-        if spec_cache.name in ["jam.spec"]:
-            pass  # Keep our spec file
-        else:
-            try:
-                spec_cache.unlink()
-            except Exception:
-                pass
 
-def build(dev_mode=False, skip_deps=False):
-    """Build the executable using PyInstaller."""
-    print("🔨 Building JAM executable...")
-    
-    # Validate imports first (quick sanity check)
-    print("\n1. Validating module imports...")
-    try:
-        result = subprocess.run(
-            [sys.executable, "validate_imports.py"],
-            cwd=ROOT_DIR,
-            check=False,
-            capture_output=False
-        )
+
+def install_deps():
+    """Ensure all runtime dependencies are present."""
+    print("\n2. Ensuring dependencies are installed...")
+    dep_script = ROOT_DIR / "install-deps.py"
+    if dep_script.exists():
+        result = _run([sys.executable, str(dep_script)], cwd=ROOT_DIR)
         if result.returncode != 0:
-            print("⚠️  Import validation had issues (continuing anyway...)")
-    except Exception as e:
-        print(f"⚠️  Could not run validate_imports.py: {e}")
-    
-    # Optionally install dependencies first
-    if not skip_deps:
-        print("\n2. Ensuring all dependencies are installed...")
-        try:
-            result = subprocess.run(
-                [sys.executable, "install-deps.py"],
-                cwd=ROOT_DIR,
-                check=False
-            )
-            if result.returncode != 0:
-                print("⚠️  Dependency installation had issues (non-fatal, continuing...)")
-        except Exception as e:
-            print(f"⚠️  Could not run install-deps.py: {e}")
+            print("⚠️  Dependency installer reported issues (continuing).")
     else:
-        print("\n2. Skipping dependency installation (--skip-deps)")
-    
-    # Check PyInstaller
+        print("   install-deps.py not found — skipping.")
+
+
+def validate_imports():
+    """Quick sanity-check that key modules are importable."""
+    print("\n1. Validating module imports...")
+    vi = ROOT_DIR / "validate_imports.py"
+    if vi.exists():
+        result = _run([sys.executable, str(vi)], cwd=ROOT_DIR)
+        if result.returncode != 0:
+            print("⚠️  Import validation had issues (continuing).")
+    else:
+        print("   validate_imports.py not found — skipping.")
+
+
+def patch_spec_console(enable: bool):
+    """
+    Toggle the console= flag inside jam.spec in-place.
+    --console cannot be passed on the CLI when building from a .spec file,
+    so we patch the file directly for dev builds and restore it afterwards.
+    Returns the original line so the caller can restore it.
+    """
+    text = SPEC_FILE.read_text(encoding="utf-8")
+    pattern = r"(console\s*=\s*)(True|False)"
+    new_value = "True" if enable else "False"
+    new_text, count = re.subn(pattern, rf"\g<1>{new_value}", text)
+    if count == 0:
+        print("⚠️  Could not locate 'console=' in jam.spec — dev mode not applied.")
+        return text          # return original so restore is a no-op
+    SPEC_FILE.write_text(new_text, encoding="utf-8")
+    return text              # original content for restore
+
+
+def build(dev_mode: bool = False, skip_deps: bool = False) -> bool:
+    """Build the executable using PyInstaller."""
+    print("🔨 Building JAM executable...\n")
+
+    validate_imports()
+
+    if not skip_deps:
+        install_deps()
+    else:
+        print("\n2. Skipping dependency installation (--skip-deps).")
+
+    # Check PyInstaller ───────────────────────────────────────────────────────
     print("\n3. Checking PyInstaller...")
     try:
         import PyInstaller
         print(f"   PyInstaller {PyInstaller.__version__} detected ✓")
     except ImportError:
-        print("   ❌ ERROR: PyInstaller not installed")
+        print("   ❌ ERROR: PyInstaller not installed.")
         print("   Install with: pip install pyinstaller")
-        sys.exit(1)
-    
-    # Build command
-    print("\n4. Running PyInstaller...")
-    # Note: Don't use --onedir/--onefile with .spec file - those are spec file settings
-    cmd = [
-        sys.executable,
-        "-m", "PyInstaller",
-        str(SPEC_FILE),
-    ]
-    
-    if dev_mode:
-        cmd.insert(3, "--console")  # Show console for debugging
-        print("   [DEV MODE] Console window will be shown for debugging")
-    
-    print(f"   Command: {' '.join(cmd)}")
-    
-    try:
-        result = subprocess.run(cmd, check=True)
-        print("\n✅ Build successful!")
-        print(f"\n📦 Executable location:")
-        exe_path = DIST_DIR / "JAM" / "JAM.exe"
-        if exe_path.exists():
-            print(f"   {exe_path}")
-            print(f"\n🚀 To run: {exe_path}")
-        else:
-            print(f"   {DIST_DIR / 'JAM'}")
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Build failed with exit code {e.returncode}")
         return False
 
+    # Patch spec for dev mode (console window) ────────────────────────────────
+    original_spec: str | None = None
+    if dev_mode:
+        print("\n   [DEV MODE] Enabling console window in jam.spec ...")
+        original_spec = patch_spec_console(enable=True)
+
+    # Run PyInstaller ─────────────────────────────────────────────────────────
+    print("\n4. Running PyInstaller...")
+    cmd = [sys.executable, "-m", "PyInstaller", str(SPEC_FILE)]
+    print(f"   Command: {' '.join(cmd)}\n")
+
+    try:
+        result = _run(cmd, check=True)
+        success = True
+    except subprocess.CalledProcessError as e:
+        print(f"\n❌ Build failed (exit code {e.returncode})")
+        success = False
+    finally:
+        # Always restore spec to non-console for normal builds
+        if original_spec is not None:
+            SPEC_FILE.write_text(original_spec, encoding="utf-8")
+            print("\n   [DEV MODE] Restored jam.spec console=False.")
+
+    if success:
+        print("\n✅ Build successful!")
+        if EXE_PATH.exists():
+            print(f"\n📦 Executable: {EXE_PATH}")
+        else:
+            print(f"\n📦 Output folder: {APP_DIR}")
+
+    return success
+
+
+def verify_build() -> bool:
+    """
+    Check that the built output contains what we expect and excludes what
+    should never be baked in (prebuilt DBs, source data, caches).
+    """
+    print("\n🔍 Verifying build contents...")
+
+    required_files = {
+        "JAM.exe": "Main executable",
+        # build_db.py is a data file bundled via datas=; PyInstaller places
+        # data files under _internal/ (sys._MEIPASS) in onedir builds, NOT
+        # directly next to the exe.
+        "_internal/data/build_db.py": "Dictionary builder (embedded in _internal)",
+        # _tkinter.pyd must be present — UPX silently corrupts it on Windows.
+        # If this is missing, all tkinter toasts will fail at runtime.
+        "_internal/_tkinter.pyd":     "Tkinter C extension (required for toasts)",
+    }
+
+    # PyInstaller onedir: _internal/ holds the Python runtime + packages.
+    # The exact sub-structure of _internal varies, so we only assert the
+    # folder itself exists (not specific sub-paths like _internal/sudachipy).
+    required_dirs = {
+        "_internal":      "PyInstaller runtime + bundled packages",
+        "_internal/data": "Bundled data folder (build_db.py lives here)",
+        # Tcl/Tk data directories — collected by PyInstaller's tkinter hook.
+        # Missing = UPX or hook failure; toasts will crash at runtime.
+        "_internal/tcl":  "Tcl runtime data (required by tkinter)",
+        "_internal/tk":   "Tk runtime data (required by tkinter)",
+    }
+
+    unwanted = {
+        # These must never be baked into the _internal bundle.
+        # (A data/ folder next to the exe is fine — the app creates it at runtime.)
+        "_internal/data/jmdict.db": "Prebuilt dictionary — must be created at runtime",
+        "_internal/data/mined.db":  "Mined-cards DB — must be created at runtime",
+        "_internal/data/raw":       "Raw source data — not part of distribution",
+        "_internal/data/audio":     "Audio cache — generated at runtime",
+    }
+
+    ok = True
+
+    print("\n  Required files:")
+    for rel, desc in required_files.items():
+        p = APP_DIR / rel
+        if p.exists():
+            print(f"    ✓  {rel}  ({desc})")
+        else:
+            print(f"    ✗  MISSING: {rel}  ({desc})")
+            ok = False
+
+    print("\n  Required directories:")
+    for rel, desc in required_dirs.items():
+        p = APP_DIR / rel
+        if p.is_dir():
+            n = sum(1 for _ in p.rglob("*"))
+            print(f"    ✓  {rel}/  ({desc})  [{n} files]")
+        else:
+            print(f"    ✗  MISSING: {rel}/  ({desc})")
+            ok = False
+
+    print("\n  Files that must NOT be bundled:")
+    for rel, reason in unwanted.items():
+        p = APP_DIR / rel
+        if p.exists():
+            print(f"    ⚠  FOUND (remove it): {rel}  — {reason}")
+            # Warn but don't fail; developer may have stale local files.
+        else:
+            print(f"    ✓  Not present: {rel}")
+
+    if ok:
+        print("\n✅ Verification PASSED")
+    else:
+        print("\n⚠️  Verification found issues — see above")
+
+    return ok
+
+
 def create_shortcut():
-    """Create a Windows shortcut (.lnk) for easy access."""
+    """Create a Windows .lnk shortcut on the Desktop."""
     try:
         import win32com.client
-        
-        exe_path = DIST_DIR / "JAM" / "JAM.exe"
-        if not exe_path.exists():
-            print("⚠️  Executable not found for shortcut creation")
-            return
-        
-        desktop = Path.home() / "Desktop"
-        shortcut_path = desktop / "JAM - Japanese Anki Miner.lnk"
-        
-        print(f"\n🔗 Creating desktop shortcut...")
+    except ImportError:
+        print("\n⚠️  pywin32 not installed — skipping shortcut creation.")
+        print("   Install with: pip install pywin32")
+        return
+
+    if not EXE_PATH.exists():
+        print("\n⚠️  Executable not found — skipping shortcut creation.")
+        return
+
+    desktop = Path.home() / "Desktop"
+    shortcut_path = desktop / "JAM - Japanese Anki Miner.lnk"
+
+    print("\n🔗 Creating desktop shortcut...")
+    try:
         shell = win32com.client.Dispatch("WScript.Shell")
-        shortcut = shell.CreateShortcut(str(shortcut_path))
-        shortcut.TargetPath = str(exe_path)
-        shortcut.WorkingDirectory = str(exe_path.parent)
-        shortcut.IconLocation = str(exe_path)
-        shortcut.save()
-        
-        print(f"   ✓ Shortcut created: {shortcut_path}")
+        sc = shell.CreateShortcut(str(shortcut_path))
+        sc.TargetPath       = str(EXE_PATH)
+        sc.WorkingDirectory = str(EXE_PATH.parent)
+        sc.IconLocation     = str(EXE_PATH)
+        sc.save()
+        print(f"   ✓ Shortcut: {shortcut_path}")
     except Exception as e:
-        print(f"⚠️  Shortcut creation failed (non-fatal): {e}")
-        print("   You can manually create a shortcut to the executable")
-
-def verify_build():
-    """Verify that the built executable contains all required files."""
-    print("\n✓ Verifying build contents...")
-    
-    app_dir = DIST_DIR / "JAM"
-    
-    # Check critical files
-    required_files = {
-        'JAM.exe': 'Main executable',
-        'data/build_db.py': 'Dictionary database builder',
-    }
-    
-    required_dirs = {
-        '_internal': 'PyInstaller internal files',
-        '_internal/sudachipy': 'Sudachi dictionary support',
-        '_internal/manga_ocr': 'Manga OCR model data',
-        'data': 'Application data folder',
-    }
-    
-    optional_dirs = {
-        'data/audio': 'Audio resources (VOICEVOX - optional)',
-    }
-    
-    print("\n  Checking required files:")
-    files_ok = True
-    for file_path, description in required_files.items():
-        full_path = app_dir / file_path
-        if full_path.exists():
-            print(f"    ✓ {file_path} ({description})")
-        else:
-            print(f"    ✗ MISSING: {file_path} ({description})")
-            files_ok = False
-    
-    print("\n  Checking required directories:")
-    dirs_ok = True
-    for dir_path, description in required_dirs.items():
-        full_path = app_dir / dir_path
-        if full_path.exists():
-            # Count files in directory for diagnostics
-            if dir_path.startswith('_internal'):
-                count = len(list(full_path.rglob('*'))) if full_path.exists() else 0
-                print(f"    ✓ {dir_path}/ ({description}) - {count} files")
-            else:
-                print(f"    ✓ {dir_path}/ ({description})")
-        else:
-            print(f"    ✗ MISSING: {dir_path}/ ({description})")
-            dirs_ok = False
-    
-    print("\n  Checking optional directories:")
-    for dir_path, description in optional_dirs.items():
-        full_path = app_dir / dir_path
-        if full_path.exists():
-            print(f"    ✓ {dir_path}/ ({description})")
-        else:
-            print(f"    ⊘ Not included: {dir_path}/ ({description})")
-    
-    # Check that unnecessary files are NOT included
-    print("\n  Checking for unwanted files:")
-    unwanted_files = {
-        'data/jmdict.db': 'Prebuilt dictionary (should be built on first run)',
-        'data/mined.db': 'Mined cards database (should be created at runtime)',
-        'data/raw': 'Raw source data for dictionary building',
-        'data/__pycache__': 'Python cache files',
-    }
-    
-    unwanted_ok = True
-    for file_path, reason in unwanted_files.items():
-        full_path = app_dir / file_path
-        if full_path.exists():
-            print(f"    ⚠ FOUND: {file_path} ({reason})")
-            unwanted_ok = False
-        else:
-            print(f"    ✓ Not included: {file_path}")
-    
-    if files_ok and dirs_ok and unwanted_ok:
-        print("\n✅ Build verification PASSED - all required files present!")
-        return True
-    else:
-        print("\n⚠️  Build verification issues detected - see above")
-        return True  # Don't fail, but warn
+        print(f"   ⚠️  Shortcut creation failed: {e}")
 
 
+# ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="Build JAM executable")
-    parser.add_argument("--clean", action="store_true", help="Clean build artifacts first")
-    parser.add_argument("--dev", action="store_true", help="Build with console for debugging")
-    parser.add_argument("--no-shortcut", action="store_true", help="Skip desktop shortcut creation")
-    parser.add_argument("--skip-deps", action="store_true", help="Skip dependency installation check")
+    parser.add_argument("--clean",       action="store_true",
+                        help="Remove build artefacts before building")
+    parser.add_argument("--dev",         action="store_true",
+                        help="Build with a visible console window (debugging)")
+    parser.add_argument("--no-shortcut", action="store_true",
+                        help="Skip desktop shortcut creation")
+    parser.add_argument("--skip-deps",   action="store_true",
+                        help="Skip pip dependency installation check")
     args = parser.parse_args()
-    
+
     if args.clean:
         clean()
-    
-    # Build
+
     if build(dev_mode=args.dev, skip_deps=args.skip_deps):
-        # Verify the build contents
         verify_build()
-        
+
         if not args.no_shortcut:
-            try:
-                create_shortcut()
-            except Exception as e:
-                print(f"⚠️  Shortcut creation skipped: {e}")
-        
+            create_shortcut()
+
         print("\n" + "=" * 60)
-        print("Build complete! Your JAM executable is ready.")
+        print("Build complete!  Your JAM executable is ready.")
+        if EXE_PATH.exists():
+            print(f"Location: {EXE_PATH}")
         print("=" * 60)
     else:
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

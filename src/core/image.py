@@ -425,27 +425,24 @@ class ImagePicker:
         self._start_thumbnail_loader()
         
     def _position_window(self):
-        """Centers the picker on the screen, with minimum size for few images."""
+        """Centers the picker on the screen. Height is capped so the scroll area works."""
         num_images = len(self.candidates)
-        rows   = max(1, -(-num_images // _COLS))   # ceiling division, at least 1
-        
-        # Calculate grid height with minimum space per row
-        min_row_h = _THUMB_SIZE + _THUMB_PAD * 2 + rescale(22)
-        grid_h = rows * min_row_h
-        
-        total_h = (
-            rescale(38)          # title bar
-            + rescale(12)        # top gap
-            + grid_h             # thumbnail rows
-            + rescale(12)        # bottom gap
-            + rescale(60)        # button row (increased for visibility)
-        )
-        
-        # Ensure minimum dimensions
-        total_h = max(total_h, rescale(300))
-        
-        sw = self.root.winfo_screenwidth()
+        rows = max(1, -(-num_images // _COLS))   # ceiling division, at least 1
+
+        # Height of one thumbnail row
+        row_h = _THUMB_SIZE + _THUMB_PAD * 2 + rescale(22)
+
+        # Fixed chrome heights (title bar + padding + button row)
+        chrome_h = rescale(38) + rescale(12) + rescale(12) + rescale(60)
+
+        # Ideal height to show all rows, but cap at 80% of screen height
         sh = self.root.winfo_screenheight()
+        max_grid_h = int(sh * 0.80) - chrome_h
+        grid_h = min(rows * row_h, max_grid_h)
+
+        total_h = max(chrome_h + grid_h, rescale(300))
+
+        sw = self.root.winfo_screenwidth()
         x  = (sw - _PICKER_W) // 2
         y  = (sh - total_h)   // 2
         self.root.geometry(f"{_PICKER_W}x{total_h}+{x}+{y}")

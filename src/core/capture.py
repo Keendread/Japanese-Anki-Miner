@@ -267,20 +267,16 @@ class CaptureController:
         
     def _on_press(self, key: Any) -> None:
         norm_key = self._normalize(key)
-        print(f"[Capture._on_press] Key pressed: {norm_key}, pressed_keys={self.pressed_keys}, combo_active={self.combo_active}")
         self.pressed_keys.add(norm_key)
         if self._matches_combo():
-            print(f"[Capture._on_press] Combo matches! combo_active={self.combo_active}")
             if not self.combo_active:
                 import time
                 now = time.time()
                 # Ignore if triggered less than 0.5s ago (throttle)
                 if now - self._last_trigger_time < 0.5:
-                    print(f"[Capture._on_press] Throttled: last trigger {now - self._last_trigger_time:.2f}s ago")
                     return
                 self._last_trigger_time = now
                 self.combo_active = True
-                print(f"[Capture._on_press] Combo matched! Spawning trigger thread")
                 threading.Thread(target=self.on_trigger, daemon=True).start()
         if norm_key == "q":
             self.stop()

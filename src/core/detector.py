@@ -80,7 +80,7 @@ class TextRegion:
             h=min(img_h, self.h + pad * 2),
         )
  
-    def crop_from(self, image: Image.Image, pad: int = 6) -> Image.Image:
+    def crop_from(self, image: Image.Image, pad: int = 2) -> Image.Image:
         """Crops this region (with optional padding) from `image`."""
         img_w, img_h = image.size
         box = self.padded(pad, img_w, img_h).to_pil_box()
@@ -175,135 +175,98 @@ def detect_regions(
     row_band:     int = 40,
     debug_dir:    str = "",
 ) -> List[TextRegion]:
-    """
-    Detects text regions in a PIL image using OpenCV connected components.
- 
-    Algorithm:
-        1. Grayscale → Otsu binary-inverse (text = white blobs on black).
-        2. Dilate horizontally: merges individual characters on the same
-           line into one connected blob per text line.
-        3. connectedComponentsWithStats → bounding boxes per blob.
-        4. Filter noise by area and aspect; remove full-image artifacts.
-        5. Sort into Japanese reading order (top → bottom, right → left).
- 
-    Args:
-        image:      PIL Image to analyze.
-        min_area:   Minimum blob area in pixels; smaller blobs are noise.
-        dilation_x: Horizontal kernel width — larger merges more characters.
-                    Increase for wide-spaced fonts; decrease for dense kanji.
-        dilation_y: Vertical kernel height — keep small to avoid merging lines.
-        row_band:   Pixel height of "row bands" for reading-order sorting.
-        debug_dir:  If set, save intermediate images (grayscale, binary, dilated) for inspection.
- 
-    Returns:
-        List[TextRegion] sorted top-to-bottom, right-to-left.
-        Empty list if opencv-python is not installed.
-    """
     try:
         import cv2
     except ImportError:
-        print("[Detector] WARNING: opencv-python not installed")
-        print("[Detector]   - Multi-word screen capture mode will not work")
-        print("[Detector]   - Bbox overlay will fall back to single-word mode")
-        print("[Detector]   - Install with: pip install opencv-python")
         return []
- 
+
     img_w, img_h = image.size
     arr  = np.array(image.convert("RGB"))
     gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
- 
-    # Save debug images if requested
+
     if debug_dir:
         try:
-            import os
             os.makedirs(debug_dir, exist_ok=True)
-            debug_gray_path = os.path.join(debug_dir, "detector_grayscale.png")
-            cv2.imwrite(debug_gray_path, gray)
-            _log.debug(f"[Detector] Saved grayscale debug to {debug_gray_path}")
-        except Exception as e:
-            _log.debug(f"[Detector] Failed to save grayscale debug: {e}")
- 
-    # Try OTSU binary inverse first
-    _, binary = cv2.threshold(
+            cv2.imwrite(os.path.join(debug_dir, "detector_grayscale.png"), gray)
+        except Exception: pass
+
+    # --- NEW: smart threshold selection ---
+    # Determine if image is light-on-dark (e.g. dark mode) or dark-on-light
+    mean_brightness = gray.mean()
+    
+    # Try OTSU first
+    otsu_thresh, binary = cv2.threshold(
         gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
     )
- 
-    # If OTSU gives mostly black or mostly white, try adaptive threshold
-    white_ratio = np.sum(binary == 255) / (binary.shape[0] * binary.shape[1])
-    _log.debug(f"[Detector] OTSU white ratio: {white_ratio:.2%}")
-    
-    if white_ratio < 0.01 or white_ratio > 0.99:
-        _log.debug(f"[Detector] OTSU threshold extreme ({white_ratio:.2%}) — trying adaptive threshold")
-        # Adaptive threshold often works better for variable lighting
+    white_ratio = np.sum(binary == 255) / binary.size
+
+    if white_ratio > 0.90:
+        # OTSU inverted the wrong way — background got thresholded as text.
+        # This happens on dark-mode UIs where most pixels are dark background.
+        # Use a fixed percentile-based threshold instead.
+        p_high = np.percentile(gray, 90)
+        p_low  = np.percentile(gray, 10)
+        
+        if mean_brightness < 128:
+            # Dark background, bright text: threshold above the 85th percentile
+            thresh_val = int(np.percentile(gray, 85))
+            thresh_val = max(thresh_val, 80)  # floor to avoid thresholding noise
+            _, binary = cv2.threshold(gray, thresh_val, 255, cv2.THRESH_BINARY)
+        else:
+            # Light background, dark text: standard inverse with fixed threshold
+            _, binary = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY_INV)
+        
+        white_ratio = np.sum(binary == 255) / binary.size
+        _log.debug(f"[Detector] Fallback threshold used, white ratio now: {white_ratio:.2%}")
+
+    elif white_ratio < 0.01:
+        # Almost nothing detected — try flipping polarity
+        _, binary = cv2.threshold(
+            gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+        )
+        white_ratio = np.sum(binary == 255) / binary.size
+
+    # Adaptive threshold as last resort if still extreme
+    if white_ratio < 0.001 or white_ratio > 0.999:
         binary = cv2.adaptiveThreshold(
             gray, 255,
             cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
             cv2.THRESH_BINARY_INV,
-            blockSize=21,
-            C=5
+            blockSize=21, C=5
         )
-        white_ratio = np.sum(binary == 255) / (binary.shape[0] * binary.shape[1])
-        _log.debug(f"[Detector] Adaptive white ratio: {white_ratio:.2%}")
- 
-    # Save binary debug image if requested
+
     if debug_dir:
         try:
-            debug_binary_path = os.path.join(debug_dir, "detector_binary.png")
-            cv2.imwrite(debug_binary_path, binary)
-            _log.debug(f"[Detector] Saved binary debug to {debug_binary_path}")
-        except Exception as e:
-            _log.debug(f"[Detector] Failed to save binary debug: {e}")
- 
-    # Dilate horizontally to merge characters in the same word / line
+            cv2.imwrite(os.path.join(debug_dir, "detector_binary.png"), binary)
+        except Exception: pass
+
     kernel  = cv2.getStructuringElement(cv2.MORPH_RECT, (dilation_x, dilation_y))
     dilated = cv2.dilate(binary, kernel, iterations=2)
- 
-    # Save dilated debug image if requested
+
     if debug_dir:
         try:
-            debug_dilated_path = os.path.join(debug_dir, "detector_dilated.png")
-            cv2.imwrite(debug_dilated_path, dilated)
-            _log.debug(f"[Detector] Saved dilated debug to {debug_dilated_path}")
-        except Exception as e:
-            _log.debug(f"[Detector] Failed to save dilated debug: {e}")
-    
-    # Apply connected components analysis to find text blobs
+            cv2.imwrite(os.path.join(debug_dir, "detector_dilated.png"), dilated)
+        except Exception: pass
+
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(dilated, connectivity=8)
-    
-    # Log component stats if debug_dir is set
-    if debug_dir:
-        try:
-            num_comps = max(0, len(stats) - 1)
-            _log.debug(f"[Detector] connectedComponents found {num_comps} candidate(s)")
-            # Print a handful of stats for inspection
-            for i in range(1, min(len(stats), 8)):
-                x_i = int(stats[i, cv2.CC_STAT_LEFT])
-                y_i = int(stats[i, cv2.CC_STAT_TOP])
-                w_i = int(stats[i, cv2.CC_STAT_WIDTH])
-                h_i = int(stats[i, cv2.CC_STAT_HEIGHT])
-                area_i = int(stats[i, cv2.CC_STAT_AREA])
-                _log.debug(f"[Detector] comp#{i}: x={x_i} y={y_i} w={w_i} h={h_i} area={area_i}")
-        except Exception:
-            pass
- 
+
     regions: List[TextRegion] = []
-    for i in range(1, len(stats)):          # index 0 is always background
+    for i in range(1, len(stats)):
         x    = int(stats[i, cv2.CC_STAT_LEFT])
         y    = int(stats[i, cv2.CC_STAT_TOP])
         w    = int(stats[i, cv2.CC_STAT_WIDTH])
         h    = int(stats[i, cv2.CC_STAT_HEIGHT])
         area = int(stats[i, cv2.CC_STAT_AREA])
- 
+
         if area < min_area:
-            continue                        # noise
+            continue
         if w < 4 or h < 4:
-            continue                        # too thin to be text
+            continue
         if w > img_w * 0.92 and h > img_h * 0.5:
-            continue                        # covers most of image → background blob
- 
+            continue
+
         regions.append(TextRegion(x=x, y=y, w=w, h=h))
- 
-    # Japanese reading order: top band first, then right-to-left within band
+
     regions.sort(key=lambda r: (r.y // row_band, -(r.x + r.w)))
     return regions
  
