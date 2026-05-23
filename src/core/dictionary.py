@@ -3,6 +3,7 @@
 # Uses persistent SQLite conncetion with locks for speed
 
 import os
+import sys
 import sqlite3
 import threading
 from typing import Optional, Any
@@ -12,11 +13,19 @@ _conn: Optional[sqlite3.Connection] = None
 _conn_lock: threading.Lock = threading.Lock()
 _db_ready: threading.Event = threading.Event()
 
+def _get_app_dir() -> str:
+    """Returns the root app directory regardless of frozen or dev mode."""
+    if getattr(sys, 'frozen', False):
+        # Running as PyInstaller exe — data lives next to the exe
+        return os.path.dirname(sys.executable)
+    else:
+        # Running from source — walk up from core/ to root
+        core_dir = os.path.dirname(os.path.abspath(__file__))  # src/core/
+        src_dir  = os.path.dirname(core_dir)                   # src/
+        return os.path.dirname(src_dir)                        # root/
+
 def _get_db_path() -> str:
-    core_dir = os.path.dirname(os.path.abspath(__file__))  # src/core/
-    src_dir  = os.path.dirname(core_dir)                   # src/
-    root_dir = os.path.dirname(src_dir)                    # root folder
-    return os.path.join(root_dir, "data", "jmdict.db")
+    return os.path.join(_get_app_dir(), "data", "jmdict.db")
 
 def get_connection() -> sqlite3.Connection:
     """
@@ -28,6 +37,7 @@ def get_connection() -> sqlite3.Connection:
         if _conn is None:
             db_path = _get_db_path()
             if not os.path.exists(db_path):
+                _db_ready.set()
                 raise FileNotFoundError(
                     f"Dictionary DB not found at {db_path}."
                     "Run build_db.py first."
@@ -48,11 +58,14 @@ def init() -> None:
     Pre-opens the DB connection at startup so first lookup is instant.
     Call from a background thread in main.py.
     """
-    import os
     path = _get_db_path()
+    data_dir = os.path.dirname(path)
     print(f"[Dictionary] Looking for DB at: {path}")
     print(f"[Dictionary] File exists: {os.path.exists(path)}")
-    print(f"[Dictionary] data/ contents: {os.listdir(os.path.dirname(path))}")
+    if os.path.isdir(data_dir):
+        print(f"[Dictionary] data/ contents: {os.listdir(data_dir)}")
+    else:
+        print(f"[Dictionary] data/ dir not yet created at: {data_dir}")
     get_connection()
 
 

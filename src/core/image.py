@@ -37,6 +37,15 @@ def rescale(x: int) -> int:
         return int(x * (dpi / 96.0))
     except Exception:
         return x
+
+
+def _ensure_tk_root():
+    """Return an existing Tk root or create one (withdrawn)."""
+    root = tk._default_root
+    if root is None:
+        root = tk.Tk()
+        root.withdraw()
+    return root
     
 
 @dataclass
@@ -215,17 +224,29 @@ async def fetch_candidates(word: Word) -> List[ImageCandidate]:
     Returns:
         List[ImageCandidate]: candidates without thumbnail_data (will load async)
     """
+    import re
     japanese_query = word.dictionary_form or word.surface
     english_query = word.meaning or word.surface
+    # Split English meanings into multiple search queries to improve result variety
+    english_queries = [q.strip() for q in re.split(r"[;,、/]+", english_query) if q.strip()]
+    if not english_queries:
+        english_queries = [english_query]
     
     async with aiohttp.ClientSession() as session:
         loop = asyncio.get_event_loop()
 
         ira_task = _search_irasutoya(japanese_query, session)
-        bing_task = loop.run_in_executor(
-            None, _search_bing_sync, english_query
-        )
-        ira_results, bing_results = await asyncio.gather(ira_task, bing_task)
+        # Run multiple Bing queries in executor to diversify results
+        bing_futures = [loop.run_in_executor(None, _search_bing_sync, q) for q in english_queries]
+        ira_results, *bing_results_lists = await asyncio.gather(ira_task, *bing_futures)
+        # Flatten bing results and deduplicate by URL
+        bing_results = []
+        seen_urls = set()
+        for br in bing_results_lists:
+            for c in br:
+                if c.url not in seen_urls:
+                    seen_urls.add(c.url)
+                    bing_results.append(c)
 
         all_candidates: List[ImageCandidate] = ira_results + bing_results
         
@@ -382,7 +403,8 @@ class ImagePicker:
         self._thumb_cells: List[tk.Frame] = []
         self._updated_thumbnails: set = set()  # Track which thumbnails have been updated
  
-        self.root = tk.Tk()
+        # Use a Toplevel attached to the existing Tk root to avoid multiple Tk instances
+        self.root = tk.Toplevel(_ensure_tk_root())
         self.root.title("JAM — Select Image")
         self.root.resizable(False, False)
         self.root.attributes("-topmost", True)
@@ -403,27 +425,24 @@ class ImagePicker:
         self._start_thumbnail_loader()
         
     def _position_window(self):
-        """Centers the picker on the screen, with minimum size for few images."""
+        """Centers the picker on the screen. Height is capped so the scroll area works."""
         num_images = len(self.candidates)
-        rows   = max(1, -(-num_images // _COLS))   # ceiling division, at least 1
-        
-        # Calculate grid height with minimum space per row
-        min_row_h = _THUMB_SIZE + _THUMB_PAD * 2 + rescale(22)
-        grid_h = rows * min_row_h
-        
-        total_h = (
-            rescale(38)          # title bar
-            + rescale(12)        # top gap
-            + grid_h             # thumbnail rows
-            + rescale(12)        # bottom gap
-            + rescale(60)        # button row (increased for visibility)
-        )
-        
-        # Ensure minimum dimensions
-        total_h = max(total_h, rescale(300))
-        
-        sw = self.root.winfo_screenwidth()
+        rows = max(1, -(-num_images // _COLS))   # ceiling division, at least 1
+
+        # Height of one thumbnail row
+        row_h = _THUMB_SIZE + _THUMB_PAD * 2 + rescale(22)
+
+        # Fixed chrome heights (title bar + padding + button row)
+        chrome_h = rescale(38) + rescale(12) + rescale(12) + rescale(60)
+
+        # Ideal height to show all rows, but cap at 80% of screen height
         sh = self.root.winfo_screenheight()
+        max_grid_h = int(sh * 0.80) - chrome_h
+        grid_h = min(rows * row_h, max_grid_h)
+
+        total_h = max(chrome_h + grid_h, rescale(300))
+
+        sw = self.root.winfo_screenwidth()
         x  = (sw - _PICKER_W) // 2
         y  = (sh - total_h)   // 2
         self.root.geometry(f"{_PICKER_W}x{total_h}+{x}+{y}")
@@ -589,44 +608,43 @@ class ImagePicker:
     def _start_thumbnail_loader(self):
         """Starts a background thread to download thumbnails asynchronously."""
         def load_thumbnails():
-            import time
             try:
                 import requests
+                from concurrent.futures import ThreadPoolExecutor, as_completed
             except ImportError:
                 print("[Image] requests library not available for thumbnail loading")
                 return
-            
-            # Download thumbnails one at a time
-            for idx, candidate in enumerate(self.candidates):
-                if not self.running:  # Exit if window closed or closing
-                    break
-                if candidate.thumbnail_data:  # Already loaded
-                    continue
-                
+
+            # Use a single Session for connection pooling
+            session = requests.Session()
+            session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+
+            def fetch(idx, url):
                 try:
-                    # Add small delay between downloads to avoid overwhelming servers
-                    time.sleep(0.2)
-                    
-                    response = requests.get(
-                        candidate.thumbnail_url, 
-                        timeout=5,
-                        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-                    )
-                    response.raise_for_status()
-                    
-                    # Only update if still running (window not closing)
-                    if self.running:
-                        # Update candidate with thumbnail data
-                        self.candidates[idx].thumbnail_data = response.content
-                        # Mark this thumbnail as ready to be updated (don't use root.after)
-                        self._updated_thumbnails.add(idx)
-                    
-                except requests.exceptions.Timeout:
-                    print(f"[Image] Thumbnail timeout ({candidate.thumbnail_url[:55]}…)")
-                except requests.exceptions.RequestException as e:
-                    print(f"[Image] Thumbnail fetch failed ({candidate.thumbnail_url[:55]}…): {e}")
+                    resp = session.get(url, timeout=6)
+                    resp.raise_for_status()
+                    return idx, resp.content
                 except Exception as e:
-                    print(f"[Image] Unexpected thumbnail error: {e}")
+                    return idx, None
+
+            # Fetch thumbnails in parallel to speed up loading
+            max_workers = min(6, max(2, len(self.candidates)))
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                futures = {ex.submit(fetch, idx, c.thumbnail_url): idx for idx, c in enumerate(self.candidates)}
+                for fut in as_completed(futures):
+                    if not self.running:
+                        break
+                    try:
+                        idx, content = fut.result()
+                        if content and self.running:
+                            self.candidates[idx].thumbnail_data = content
+                            self._updated_thumbnails.add(idx)
+                    except Exception:
+                        pass
+            try:
+                session.close()
+            except Exception:
+                pass
         
         # Run in background thread so it doesn't block UI
         self._loader_thread = threading.Thread(target=load_thumbnails, daemon=True)
@@ -674,10 +692,25 @@ class ImagePicker:
                 else None
             )
             self.running = False
-            # Don't call _close() here - let show() event loop handle cleanup
-            if self.on_select:
+            # Prevent double-invocation
+            cb = self.on_select
+            self.on_select = None
+            # Disable confirm button immediately
+            try:
+                self._confirm_btn.configure(state=tk.DISABLED)
+            except Exception:
+                pass
+            if cb:
                 print(f"[Image] Calling on_select callback")
-                self.on_select(result)
+                cb(result)
+            # Ensure picker closes promptly even if main loop isn't pumping
+            try:
+                self.root.after(0, self._close)
+            except Exception:
+                try:
+                    self._close()
+                except Exception:
+                    pass
         except Exception as e:
             print(f"[Image] Error in _confirm: {e}")
             import traceback
@@ -686,9 +719,18 @@ class ImagePicker:
     def _skip(self):
         print(f"[Image] Skipping image selection")
         self.running = False
-        # Don't call _close() here - let show() event loop handle cleanup
-        if self.on_select:
-            self.on_select(None)
+        # Prevent double-invocation
+        cb = self.on_select
+        self.on_select = None
+        if cb:
+            cb(None)
+        try:
+            self.root.after(0, self._close)
+        except Exception:
+            try:
+                self._close()
+            except Exception:
+                pass
  
     def _close(self):
         """Cleanly close the picker: stop background thread, then destroy window."""
@@ -715,33 +757,43 @@ class ImagePicker:
         Blocking: drives the tkinter event loop manually until the user
         picks an image or skips. Same pattern as CardToast.show().
         """
+        # Deprecated: legacy blocking show. Use pump() via main loop instead.
+        logging.warning("[Image] Blocking show() called — use main loop pump instead")
         import time
         while self.running:
             try:
-                # Check for newly downloaded thumbnails and update UI
                 self._update_pending_thumbnails()
-                
-                # Process GUI events multiple times for better responsiveness
-                for _ in range(10):
-                    if not self.running:  # Check if user clicked a button
-                        break
-                    try:
-                        self.root.update()
-                    except tk.TclError:
-                        self.running = False
-                        break
-                
-                # Small sleep to avoid CPU spinning
+                try:
+                    self.root.update()
+                except tk.TclError:
+                    self.running = False
+                    break
                 time.sleep(0.01)
-            except tk.TclError:
-                # Window was destroyed, exit loop cleanly
-                break
             except Exception as e:
                 print(f"[Image] Unexpected error in event loop: {e}")
                 break
-        
-        # Ensure proper cleanup when exiting
         self._close()
+
+    def pump(self):
+        """Perform a single pump iteration for the picker; safe to call from main loop."""
+        if not self.running:
+            # Ensure cleanup if picker finished
+            try:
+                self._close()
+            except Exception:
+                pass
+            return
+
+        try:
+            # Update any thumbnails downloaded by background threads
+            self._update_pending_thumbnails()
+            # Pump Tk events once
+            try:
+                self.root.update()
+            except tk.TclError:
+                self.running = False
+        except Exception as e:
+            print(f"[Image] Error in pump: {e}")
             
             
 def show_image_picker(
@@ -765,7 +817,33 @@ def show_image_picker(
             print("[Image] No candidates — skipping picker.")
             on_select(None)
             return
+        # Create picker and register as active so main loop can pump it
         picker = ImagePicker(candidates, on_select=on_select)
-        picker.show()
- 
+        # Store active picker for pumping
+        global _ACTIVE_PICKER
+        _ACTIVE_PICKER = picker
+
     main_thread_queue.put(_show)
+
+
+_ACTIVE_PICKER: Optional[ImagePicker] = None
+
+
+def pump_pending_image_once():
+    """Called from main loop to pump active image picker if any."""
+    global _ACTIVE_PICKER
+    picker = _ACTIVE_PICKER
+    if picker is None:
+        return
+    try:
+        picker.pump()
+        if not picker.running:
+            # picker finished; ensure on_select already called by _confirm/_skip
+            _ACTIVE_PICKER = None
+    except Exception as e:
+        print(f"[Image] pump error: {e}")
+        try:
+            picker._close()
+        except Exception:
+            pass
+        _ACTIVE_PICKER = None

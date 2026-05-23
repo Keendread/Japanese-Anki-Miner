@@ -7,6 +7,14 @@ from PIL import Image
 from mss import mss
  
 
+def _ensure_tk_root():
+    root = tk._default_root
+    if root is None:
+        root = tk.Tk()
+        root.withdraw()
+    return root
+ 
+
 TRANSPARENT_COLOR = "#FEFEFE"   
 OVERLAY_COLOR     = "#FFFFFF"   
  
@@ -21,7 +29,7 @@ class BBoxOverlay:
         self.dim_id  = None
         self.running = True
  
-        self.root = tk.Tk()
+        self.root = tk.Toplevel(_ensure_tk_root())
         self.root.attributes("-fullscreen", True)
         self.root.attributes("-topmost", True)
         self.root.attributes("-transparentcolor", TRANSPARENT_COLOR)

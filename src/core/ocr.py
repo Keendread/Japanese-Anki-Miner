@@ -2,12 +2,13 @@
 # Primarily uses MangaOCR but you can add fallback OCR models
 # Feeds into parser.py
 
-from PIL import Image, ImageFilter, ImageEnhance
+from PIL import Image
 import threading
 import time
 import logging
 import warnings
 from typing import Any
+import numpy as np
 
 _ocr_model: Any = None
 _model_lock: threading.Lock = threading.Lock()
@@ -39,39 +40,77 @@ def preprocess(image: Image.Image) -> Image.Image:
     Returns:
         Image.Image: Preprocessed image
     """
+    import cv2
+
+    if image.mode != "RGB":
+        image = image.convert("RGB")
+
+    gray = np.array(image.convert("L"))
+    mean_brightness = gray.mean()
+
+    # Determine binarization direction based on background brightness
+    if mean_brightness < 128:
+        # Dark background, bright text → threshold to white text on black
+        _, bw = cv2.threshold(gray, 100, 255, cv2.THRESH_BINARY)
+    else:
+        # Light background, dark text → invert so text becomes white on black
+        _, bw = cv2.threshold(gray, 160, 255, cv2.THRESH_BINARY_INV)
+
+    # If binarization produced almost nothing (wrong polarity), flip it
+    white_pct = np.sum(bw == 255) / bw.size
+    if white_pct < 0.02 or white_pct > 0.95:
+        bw = cv2.bitwise_not(bw)
+
+    image = Image.fromarray(bw).convert("RGB")
+
+    # Now upscale with NEAREST — crisp edges on binary, no halo artifacts
     w, h = image.size
-    if w < 300 or h < 60:
-        scale = 2
-        image = image.resize((w * scale, h * scale), Image.LANCZOS)
+    TARGET_H = 64
+    TARGET_W = 64
+    scale = max(
+        TARGET_H / h if h < TARGET_H else 1.0,
+        TARGET_W / w if w < TARGET_W else 1.0,
+    )
+    if scale > 1.0:
+        image = image.resize((int(w * scale), int(h * scale)), Image.NEAREST)
 
-    image = image.filter(ImageFilter.SHARPEN)
-
-    enhancer = ImageEnhance.Contrast(image)
-    image = enhancer.enhance(2.0)
-
-    return  image
+    return image
 
 def get_model() -> Any:
-    """Returns current used OCR model, loading it on first call."""
     global _ocr_model
     with _model_lock:
         if _ocr_model is None:
-            from manga_ocr import MangaOcr
-            
-            logging.getLogger("manga_ocr").setLevel(logging.ERROR)
-            warnings.filterwarnings("ignore")
-            
-            stop_spinner = threading.Event()
-            spinner = threading.Thread(target=_loading_spinner, args=(stop_spinner,), daemon=True)
-            spinner.start()
+            try:
+                from manga_ocr import MangaOcr
+                import sys
 
-            _ocr_model = MangaOcr()
-            
-            stop_spinner.set()
-            spinner.join()
+                logging.getLogger("manga_ocr").setLevel(logging.ERROR)
+                warnings.filterwarnings("ignore")
+                
+                import io
+                if sys.stdout is None:
+                    sys.stdout = io.StringIO()
+                if sys.stderr is None:
+                    sys.stderr = io.StringIO()
 
-            warnings.filterwarnings("default")
-            _model_ready.set()
+                stop_spinner = threading.Event()
+                spinner = threading.Thread(target=_loading_spinner, args=(stop_spinner,), daemon=True)
+                spinner.start()
+
+                _ocr_model = MangaOcr()
+
+                stop_spinner.set()
+                spinner.join()
+
+                warnings.filterwarnings("default")
+                _model_ready.set()
+                logging.info("[OCR] Model loaded successfully.")
+
+            except Exception as e:
+                logging.exception(f"[OCR] Model failed to load: {e}")
+                _model_ready.set()  # unblock the toast even on failure
+                warnings.filterwarnings("default")
+
     return _ocr_model
 
 def extract_text(image: Image.Image) -> str:
