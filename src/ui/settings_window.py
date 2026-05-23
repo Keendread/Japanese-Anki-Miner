@@ -271,13 +271,10 @@ def show_settings_window(settings, main_thread_queue=None):
 
 
 def pump_pending_window_once():
-    """Pump a single iteration of the settings window event loop if open.
-    Designed to be called from the main thread (main loop)."""
     win = SettingsWindow._instance
     if win is None:
         return
     try:
-        # Handle background-thread events first
         try:
             event_type, event_data = win._event_queue.get_nowait()
             if event_type == "save_success":
@@ -290,8 +287,6 @@ def pump_pending_window_once():
                 messagebox.showerror("Error saving settings", event_data)
         except queue.Empty:
             pass
-
-        win.root.update()
     except tk.TclError:
         logging.info("[Settings] Window closed (TclError during pump)")
         try:

@@ -14,6 +14,13 @@ except Exception:
 
 
 def _ensure_tk_root():
+    # Prefer the root created by settings_window to avoid two Tk instances
+    try:
+        from ui.settings_window import _TK_ROOT
+        if _TK_ROOT is not None:
+            return _TK_ROOT
+    except Exception:
+        pass
     root = tk._default_root
     if root is None:
         root = tk.Tk()
@@ -197,13 +204,12 @@ class LoadingToast:
             self._on_all_ready()
 
     def pump(self):
-        """Called from the main loop each cycle (like other toasts)."""
-        if not self.running:
-            return
-        try:
-            self._root.update_idletasks()
-        except tk.TclError:
-            self.running = False
+        if not self.running and self._root is not None:
+            try:
+                self._root.destroy()
+            except Exception:
+                pass
+            self._root = None
 
     # ── Background watcher threads ────────────────────────────────────────────
 

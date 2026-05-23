@@ -168,8 +168,8 @@ def verify_build() -> bool:
         "_internal/data": "Bundled data folder (build_db.py lives here)",
         # Tcl/Tk data directories — collected by PyInstaller's tkinter hook.
         # Missing = UPX or hook failure; toasts will crash at runtime.
-        "_internal/tcl":  "Tcl runtime data (required by tkinter)",
-        "_internal/tk":   "Tk runtime data (required by tkinter)",
+        "_internal/_tcl_data":  "Tcl runtime data (required by tkinter)",
+        "_internal/_tk_data":   "Tk runtime data (required by tkinter)",
     }
 
     unwanted = {

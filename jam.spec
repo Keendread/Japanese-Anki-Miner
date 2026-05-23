@@ -46,8 +46,45 @@ sudachi_data  = collect_data_files("sudachipy")
 manga_ocr_data = collect_data_files("manga_ocr")
 datas += sudachi_data
 datas += manga_ocr_data
+from PyInstaller.utils.hooks import collect_data_files
+
 print(f"[PyInstaller]   sudachipy  : {len(sudachi_data)} entries")
 print(f"[PyInstaller]   manga_ocr  : {len(manga_ocr_data)} entries")
+
+# MangaOCR data files
+datas += collect_data_files("manga_ocr")
+datas += collect_data_files("transformers")
+datas += collect_data_files("huggingface_hub")
+datas += collect_data_files("unidic_lite")    # critical — contains dicdir/version
+datas += collect_data_files("fugashi")
+datas += collect_data_files("google.protobuf")
+datas += collect_data_files("timm")           # MangaOCR uses timm for ViT backbone
+
+# Bundle manga_ocr .py source files — transformers reads them at runtime
+# via inspect.getfile() in _can_set_experts_implementation()
+import manga_ocr as _manga_ocr_mod
+import os
+_manga_ocr_dir = os.path.dirname(_manga_ocr_mod.__file__)
+datas += [(_manga_ocr_dir, "manga_ocr")]
+
+import transformers as _transformers_mod
+import os
+_transformers_dir = os.path.dirname(_transformers_mod.__file__)
+
+# Only bundle the submodules MangaOCR actually uses
+for _subdir in ["models/vision_encoder_decoder", "models/trocr", "models/vit", "models/bert_japanese"]:
+    _src = os.path.join(_transformers_dir, _subdir)
+    _dst = f"transformers/{_subdir}"
+    if os.path.isdir(_src):
+        datas += [(_src, _dst)]
+
+# Also bundle modeling_utils.py itself
+datas += [(os.path.join(_transformers_dir, "modeling_utils.py"), "transformers")]
+
+# Instead of all of torch data, just collect the essential configs
+import torch, os
+torch_dir = os.path.dirname(torch.__file__)
+datas += [(os.path.join(torch_dir, "share"), "torch/share")]
 
 # 2. data/build_db.py — bundled so the app can build jmdict.db on first run.
 #    We copy ONLY the files we explicitly list; never the whole data/ folder,
@@ -92,6 +129,12 @@ hiddenimports = [
     "lxml",
     "cv2",           # opencv-python
 
+    # Pillow image formats used by MangaOCR
+    "PIL.Image",
+    "PIL.ImageOps",
+    "PIL.JpegImagePlugin",
+    "PIL.PngImagePlugin",
+
     # tkinter — used by notifier.py for all toast windows.
     # PyInstaller does not collect it automatically on Windows; must be explicit.
     "tkinter",
@@ -116,6 +159,61 @@ hiddenimports = [
     "ui.settings_window",
     "ui.tray",
     "ui.word_selector",
+
+    # MangaOCR + transformers stack
+    "manga_ocr",
+    "transformers",
+    "transformers.models.auto",
+    "transformers.models.auto.tokenization_auto",
+    "transformers.models.auto.modeling_auto",
+    "transformers.models.vision_encoder_decoder",
+    "transformers.models.vision_encoder_decoder.modeling_vision_encoder_decoder",
+    "transformers.models.bert_japanese",
+    "transformers.models.bert_japanese.tokenization_bert_japanese",
+    "transformers.models.vit",
+    "transformers.models.vit.modeling_vit",
+    "transformers.models.trocr",
+    "transformers.models.trocr.modeling_trocr",
+    "transformers.models.trocr.processing_trocr",
+
+    # HuggingFace hub
+    "huggingface_hub",
+    "huggingface_hub.file_download",
+    "huggingface_hub.utils",
+
+    # Tokenizer backends
+    "fugashi",
+    "unidic_lite",
+    "jaconv",
+    "mojimoji",
+
+    # Protobuf
+    "google",
+    "google.protobuf",
+    "google.protobuf.descriptor",
+    "google.protobuf.descriptor_pool",
+    "google.protobuf.descriptor_pb2",
+    "google.protobuf.message",
+    "google.protobuf.reflection",
+    "google.protobuf.symbol_database",
+    "google.protobuf.internal",
+    "google.protobuf.internal.decoder",
+    "google.protobuf.internal.encoder",
+
+    # Torch internals that get missed
+    "torch",
+    "torch.nn",
+    "torch.nn.functional",
+    "torch.utils",
+    "torch.utils.data",
+    "torch.distributed",
+    "unittest",           # torch.distributed pulls this in
+    "unittest.mock",
+
+    "timm",
+    "timm.models",
+    "timm.models.vision_transformer",
+    "timm.layers",
 ]
 
 # pynput discovers its backend modules at runtime via importlib — collect all.
@@ -141,7 +239,6 @@ a = Analysis(
     hookspath=[],
     runtime_hooks=[],
     excludes=[
-        "unittest",
         "test",
     ],
     win_private_assemblies=False,

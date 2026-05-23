@@ -77,26 +77,40 @@ def preprocess(image: Image.Image) -> Image.Image:
     return image
 
 def get_model() -> Any:
-    """Returns current used OCR model, loading it on first call."""
     global _ocr_model
     with _model_lock:
         if _ocr_model is None:
-            from manga_ocr import MangaOcr
-            
-            logging.getLogger("manga_ocr").setLevel(logging.ERROR)
-            warnings.filterwarnings("ignore")
-            
-            stop_spinner = threading.Event()
-            spinner = threading.Thread(target=_loading_spinner, args=(stop_spinner,), daemon=True)
-            spinner.start()
+            try:
+                from manga_ocr import MangaOcr
+                import sys
 
-            _ocr_model = MangaOcr()
-            
-            stop_spinner.set()
-            spinner.join()
+                logging.getLogger("manga_ocr").setLevel(logging.ERROR)
+                warnings.filterwarnings("ignore")
+                
+                import io
+                if sys.stdout is None:
+                    sys.stdout = io.StringIO()
+                if sys.stderr is None:
+                    sys.stderr = io.StringIO()
 
-            warnings.filterwarnings("default")
-            _model_ready.set()
+                stop_spinner = threading.Event()
+                spinner = threading.Thread(target=_loading_spinner, args=(stop_spinner,), daemon=True)
+                spinner.start()
+
+                _ocr_model = MangaOcr()
+
+                stop_spinner.set()
+                spinner.join()
+
+                warnings.filterwarnings("default")
+                _model_ready.set()
+                logging.info("[OCR] Model loaded successfully.")
+
+            except Exception as e:
+                logging.exception(f"[OCR] Model failed to load: {e}")
+                _model_ready.set()  # unblock the toast even on failure
+                warnings.filterwarnings("default")
+
     return _ocr_model
 
 def extract_text(image: Image.Image) -> str:

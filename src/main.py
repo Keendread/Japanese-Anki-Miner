@@ -205,7 +205,18 @@ threading.Thread(target=parser.get_tokenizer, daemon=True).start()
 
 print("[Startup] Opening dictionary connection in background...")
 logging.info("Starting dictionary and Anki sync...")
-threading.Thread(target=dictionary.init,      daemon=True).start()
+def _init_dictionary():
+    # Small poll loop — waits for build_db to finish if it's running
+    import time
+    from core import dictionary
+    while True:
+        db_path = dictionary._get_db_path()
+        if os.path.exists(db_path):
+            break
+        time.sleep(1.0)
+    dictionary.init()
+
+threading.Thread(target=_init_dictionary, daemon=True).start()
 
 def _sync_anki():
     deck = settings.get("anki_deck", "Test Deck")
@@ -269,34 +280,33 @@ while not _should_exit:
     except Exception as e:
         logging.exception(f"Main loop error: {e}")
 
-    # Pump all active UI components
+# Pump all active UI components
+    try:
+        from ui.settings_window import _TK_ROOT
+        if _TK_ROOT is not None:
+            _TK_ROOT.update()
+    except Exception as e:
+        logging.error(f"Error pumping Tk root: {e}")
     try:
         pump_pending_window_once()
     except Exception as e:
         logging.error(f"Error pumping settings window: {e}")
     try:
-        pump_loading_toast_once()       # startup progress toast
+        pump_loading_toast_once()
     except Exception as e:
         logging.error(f"Error pumping loading toast: {e}")
     try:
-        pump_pending_toast_once()       # card preview toast
+        pump_pending_toast_once()
     except Exception as e:
         logging.error(f"Error pumping card toast: {e}")
     try:
-        pump_pending_dup_once()         # duplicate toast
+        pump_pending_dup_once()
     except Exception as e:
         logging.error(f"Error pumping dup toast: {e}")
     try:
         pump_pending_image_once()
     except Exception as e:
         logging.error(f"Error pumping image picker: {e}")
-    try:
-        from ui.word_selector import _ACTIVE_SELECTOR
-        if _ACTIVE_SELECTOR is not None:
-            print(f"[Main] Pumping selector (ui_built={_ACTIVE_SELECTOR._ui_built})")
-        pump_pending_selector_once()
-    except Exception as e:
-        logging.error(f"Error pumping selector: {e}")
 
     time.sleep(0.05)
 
