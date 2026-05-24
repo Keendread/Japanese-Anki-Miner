@@ -224,6 +224,7 @@ def _build_word_entries(
                 pos             = parse_result.get("pos", ""),
                 meaning         = None,
                 full_sentence   = parse_result.get("sentence", text),
+                sentence_furigana=parse_result.get("sentence_furigana", ""),
             )
 
             dict_result = dictionary.lookup(word)
@@ -231,6 +232,7 @@ def _build_word_entries(
                 word.meaning = "(not in dictionary)"
             else:
                 word.update_from_dictionary(dict_result)
+            _finalize_sentence_furigana(word)
 
             is_mined = anki.is_already_mined(word.dictionary_form, word.reading)
 
@@ -243,6 +245,23 @@ def _build_word_entries(
  
     print(f"[_build_word_entries] Returning {len(entries)} word entries")
     return entries
+
+def _finalize_sentence_furigana(word: Word) -> None:
+    """
+    Ensures sentence_furigana matches whatever best_sentence() will return.
+    Called after update_from_dictionary() so example_sentences is populated.
+    When OCR was a bare word, best_sentence() picks Tatoeba/Jitendex — 
+    we regenerate furigana for that sentence so SentenceFurigana stays in sync.
+    """
+    best = word.best_sentence()
+    if not best:
+        return
+    # OCR was a real sentence — furigana already built correctly from OCR morphemes
+    if best.strip() == (word.full_sentence or "").strip():
+        return
+    # best_sentence() chose a different source — rebuild furigana for it
+    morphemes = parser.tokenize(best)
+    word.sentence_furigana = parser.build_sentence_furigana(morphemes)
     
 class CaptureController:
     def __init__(self, combo: set, settings: dict[str, Any],
@@ -521,6 +540,7 @@ class CaptureController:
                     pos=m.part_of_speech()[0],
                     meaning=None,
                     full_sentence=text,
+                    sentence_furigana=parser.build_sentence_furigana(morphemes),
                     capture_path=filepath,
                 )
 
@@ -529,6 +549,7 @@ class CaptureController:
                     w.update_from_dictionary(dict_result)
                 else:
                     w.meaning = "(not in dictionary)"
+                _finalize_sentence_furigana(w) 
 
                 is_mined = anki.is_already_mined(w.dictionary_form, w.reading)
                 entries.append(WordEntry(word=w, is_mined=is_mined, selected=not is_mined))
@@ -572,6 +593,7 @@ class CaptureController:
             pos=parse_result["pos"],
             meaning=None,
             full_sentence=text,
+            sentence_furigana=parse_result.get("sentence_furigana", ""),
             capture_path=filepath,
         )
  
@@ -583,7 +605,8 @@ class CaptureController:
         
         logging.info(f"[Pipeline] Dictionary lookup succeeded for {word.surface}")
         word.update_from_dictionary(dict_result)
- 
+        _finalize_sentence_furigana(word)
+        
         if not word.is_valid():
             logging.warning(f"[Pipeline] Word validation failed: {word.surface}")
             return

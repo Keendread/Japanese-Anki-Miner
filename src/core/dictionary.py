@@ -13,6 +13,72 @@ _conn: Optional[sqlite3.Connection] = None
 _conn_lock: threading.Lock = threading.Lock()
 _db_ready: threading.Event = threading.Event()
 
+def _make_ruby_html(text: str) -> str:
+    """
+    Converts a Japanese string to <ruby> HTML using the parser.
+    Each kanji-containing morpheme becomes <ruby>surface<rt>reading</rt></ruby>.
+    Falls back to plain text on any error.
+    """
+    try:
+        from src.core import parser as _parser
+        morphemes = _parser.tokenize(text)
+        if not morphemes:
+            return text
+        parts = []
+        for m in morphemes:
+            surface = m.surface()
+            reading = _parser._kata_to_hira(m.reading_form())
+            if reading and reading != surface:
+                parts.append(f"<ruby>{surface}<rt>{reading}</rt></ruby>")
+            else:
+                parts.append(surface)
+        return "".join(parts)
+    except Exception:
+        return text
+
+
+def _group_senses(scored_senses: list) -> list:
+    """
+    Groups flat sense rows (already relevance-sorted) by POS into sense-group dicts.
+    Preserves the order senses were encountered (first POS seen = first group).
+
+    Each returned group dict:
+        {
+            pos:               str,
+            domain:            str,
+            glosses:           [str, ...],   # deduplicated bullet items
+            example_jp:        str | None,   # plain text (for keyword highlight)
+            example_en:        str | None,
+            example_furigana:  str | None,   # <ruby> HTML, keyword NOT yet highlighted
+        }
+    """
+    from collections import OrderedDict
+    groups: OrderedDict = OrderedDict()
+
+    for s in scored_senses:
+        pos = s["pos"] or ""
+        if pos not in groups:
+            groups[pos] = {
+                "pos":              pos,
+                "domain":           s["domain"] or "",
+                "glosses":          [],
+                "example_jp":       None,
+                "example_en":       None,
+                "example_furigana": None,
+            }
+        # Glosses are stored as "; "-joined strings in the DB — split back to bullets
+        for g in (s["gloss"] or "").split("; "):
+            g = g.strip()
+            if g and g not in groups[pos]["glosses"]:
+                groups[pos]["glosses"].append(g)
+        # Keep only the first example found per POS group
+        if not groups[pos]["example_jp"] and s["example_jp"]:
+            groups[pos]["example_jp"] = s["example_jp"]
+            groups[pos]["example_en"] = s["example_en"]
+            groups[pos]["example_furigana"] = _make_ruby_html(s["example_jp"])
+
+    return list(groups.values())
+
 def _get_app_dir() -> str:
     """Returns the root app directory regardless of frozen or dev mode."""
     if getattr(sys, 'frozen', False):
@@ -95,19 +161,27 @@ def _find_entry_id(cur: sqlite3.Cursor,
         (surface,         "kanji_forms"),
         (reading,         "kana_forms"),
     ]
-    
+
+    first_match = None
+
     for term, column in candidates:
         if not term:
             continue
-        
-        row = cur.execute(
+        rows = cur.execute(
             f"SELECT entry_id FROM entries WHERE {column} LIKE ?",
             (f'%"{term}"%',)
-        ).fetchone()
-        if row:
-            return row["entry_id"]
+        ).fetchall()
+        for row in rows:
+            eid = row["entry_id"]
+            has_senses = cur.execute(
+                "SELECT 1 FROM senses WHERE entry_id = ? LIMIT 1", (eid,)
+            ).fetchone()
+            if has_senses:
+                return eid
+            if first_match is None:
+                first_match = eid
 
-    return None
+    return first_match
 
 
 _POS_MAP = {
@@ -222,7 +296,7 @@ def lookup(parse_result: Word) -> Optional[dict[str, Any]]:
             main_sense = scored[0]
             main_definition = main_sense["gloss"]
             
-            # GLOSSARY
+            # GLOSSARY — flat (for Basic cards) + grouped (for Lapis/rich cards)
             glossary: list[dict[str, Any]] = [
                 {
                     "gloss":      s["gloss"],
@@ -233,6 +307,7 @@ def lookup(parse_result: Word) -> Optional[dict[str, Any]]:
                 }
                 for s in scored
             ]
+            sense_groups = _group_senses(scored)
             
             # PITCH ACCENT
             pitch_row = cur.execute(
@@ -266,6 +341,12 @@ def lookup(parse_result: Word) -> Optional[dict[str, Any]]:
  
             jlpt_level = jlpt_row["level"] if jlpt_row else None
             
+            # JITENDEX VERSION (for attribution header)
+            ver_row = cur.execute(
+                "SELECT value FROM db_meta WHERE key = 'jitendex_version'"
+            ).fetchone()
+            jitendex_version = ver_row["value"] if ver_row else None            
+            
             # TATOEBA EXAMPLE SENTENCES
             tat_rows = cur.execute(
                 """SELECT t.japanese, t.english
@@ -284,6 +365,8 @@ def lookup(parse_result: Word) -> Optional[dict[str, Any]]:
         result: dict[str, Any] = {
             "main_definition":   main_definition,
             "glossary":          glossary,
+            "sense_groups":      sense_groups,
+            "jitendex_version":  jitendex_version,
             "pitch_pattern":     pitch_pattern,
             "pitch_category":    pitch_category,
             "frequency_rank":    frequency_rank,

@@ -162,11 +162,19 @@ def _score_regions(regions: List[TextRegion], img_w: int, img_h: int) -> float:
     if not regions:
         return 0.0
 
-    ideal_min = 200                    # px² — smaller = likely a single char fragment
-    ideal_max = img_w * img_h * 0.4   # larger = likely a background blob
+    ideal_min = 200
+    ideal_max = img_w * img_h * 0.4
 
-    good = sum(1 for r in regions if ideal_min <= r.area <= ideal_max)
-    return good / len(regions)
+    score = 0.0
+    for r in regions:
+        if not (ideal_min <= r.area <= ideal_max):
+            continue
+        # Reward aspect ratio closer to square.
+        # ratio = min(w,h) / max(w,h) — 1.0 = perfect square, 0.0 = infinitely thin
+        ratio = min(r.w, r.h) / max(r.w, r.h) if max(r.w, r.h) > 0 else 0
+        score += ratio
+
+    return score / len(regions)
 
 
 def detect_regions(

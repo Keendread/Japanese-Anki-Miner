@@ -71,6 +71,11 @@ async def _search_irasutoya(
         https://www.irasutoya.com/feeds/posts/summary?q={query}&alt=json&max-results=N
     Each entry has a media$thumbnail field containing the image URL.
     We enlarge the thumbnail from s72-c → s400 for full resolution.
+    
+    This function prioritizes:
+    - Direct matches (exact query)
+    - Thematic results over generic illustrations
+    - Avoiding too many cartoon-only results
     """
     try:
         params = {"q": query, "alt": "json", "max-results": max_results}
@@ -94,6 +99,14 @@ async def _search_irasutoya(
                 continue
             
             title = entry.get("title", {}).get("$t", "")
+            
+            # Skip entries that are clearly unrelated (e.g., pure decorative patterns)
+            # This helps avoid cluttering results with generic illustrations
+            title_lower = title.lower()
+            if any(skip in title_lower for skip in ["border", "frame", "decorative", "pattern"]):
+                # Only skip if query isn't specifically asking for these
+                if skip not in query.lower():
+                    continue
 
             full_url = re.sub(r"/s\d+-c/", "/s400/",  raw_url)
             thumb_url = re.sub(r"/s\d+-c/", "/s200/",  raw_url)
@@ -127,6 +140,8 @@ def _search_bing_requests(query: str, max_results: int=6) -> List[ImageCandidate
     """
     Bing image search using requests + regex to extract URLs.
     More reliable than downloader libraries.
+    
+    Filters out low-quality sources and memes to improve result quality.
     """
     try:
         import requests
@@ -137,11 +152,21 @@ def _search_bing_requests(query: str, max_results: int=6) -> List[ImageCandidate
         print("[Image] requests library not available for Bing search")
         return []
     
+    # Domains to exclude for better image quality (blocklist)
+    BLOCKLIST = {
+        'pinterest.com', 'imgur.com', 'twitter.com', 'x.com', 'reddit.com',
+        'tumblr.com', 'meme', 'knowyourmeme', 'redditmedia', 'pbs.twimg',
+        'tenor.com', 'giphy.com', 'gfycat.com', 'tiktok.com', 'instagram.com',
+        'youtube.com', 'youtu.be', 'discord.com', 'twitch.tv',
+        # Exclude overly generic/stock sites that may not be relevant
+        'unsplash.com', 'pexels.com', 'pixabay.com', 'freeimages.com',
+    }
+    
     try:
         results: List[ImageCandidate] = []
         
-        # Construct Bing Image Search URL
-        search_url = f"https://www.bing.com/images/search?q={quote(query)}"
+        # Construct Bing Image Search URL with safe search
+        search_url = f"https://www.bing.com/images/search?q={quote(query)}&safeSearch=Moderate"
         
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -151,7 +176,7 @@ def _search_bing_requests(query: str, max_results: int=6) -> List[ImageCandidate
         response.raise_for_status()
         
         # Try multiple regex patterns to find image URLs
-        # Pattern 1: murl in JSON-like format
+        # Pattern 1: murl in JSON-like format (primary)
         pattern1 = r'"murl":"([^"]+)"'
         matches = re.findall(pattern1, response.text)
         
@@ -171,13 +196,21 @@ def _search_bing_requests(query: str, max_results: int=6) -> List[ImageCandidate
             pattern4 = r'"m":"([^"]+)"'
             matches = re.findall(pattern4, response.text)
         
-        # Clean up and deduplicate URLs
+        # Clean up and deduplicate URLs, filtering blocklisted domains
         unique_urls = set()
-        for url in matches[:max_results * 2]:  # Get more than needed for filtering
+        for url in matches[:max_results * 3]:  # Get more than needed for filtering
             if url and url.startswith('http'):
-                # Skip placeholder/default images
-                if 'a.thumbs.redditmedia' not in url and 'pbs.twimg' not in url:
-                    unique_urls.add(url)
+                url_lower = url.lower()
+                
+                # Skip blocklisted domains
+                if any(blocked in url_lower for blocked in BLOCKLIST):
+                    continue
+                
+                # Skip obvious non-image URLs
+                if 'javascript:' in url_lower or 'data:' in url_lower:
+                    continue
+                
+                unique_urls.add(url)
         
         for url in list(unique_urls)[:max_results]:
             results.append(ImageCandidate(
@@ -187,7 +220,7 @@ def _search_bing_requests(query: str, max_results: int=6) -> List[ImageCandidate
                 source="bing",
             ))
         
-        print(f"[Image] Bing: {len(results)} results for '{query}'")
+        print(f"[Image] Bing: {len(results)} results for '{query}' (filtered)")
         return results
         
     except Exception as e:
@@ -209,52 +242,134 @@ async def _download_thumbnail(
         print(f"[Image] Thumbnail fetch failed ({url[:55]}…): {e}")
         return None
     
+def _build_search_queries_for_pos(word: Word) -> tuple[List[str], List[str]]:
+    """
+    Builds optimized search queries based on Part of Speech.
+    Returns (japanese_queries, english_queries)
+    
+    Uses POS-specific heuristics:
+    - 動詞 (verb): action form + object context
+    - 名詞 (noun): direct object + context
+    - 形容詞 (adjective): things with that quality
+    - 副詞 (adverb): context-based meaning
+    - 助詞 (particle): sentence pattern
+    """
+    import re
+    
+    japanese_queries = []
+    english_queries = []
+    
+    pos = (word.pos or "").lower()
+    base_jp = word.dictionary_form or word.surface
+    base_en = word.meaning or word.surface
+    
+    # Split English meanings into base queries
+    base_en_list = [q.strip() for q in re.split(r"[;,、/]+", base_en) if q.strip()]
+    if not base_en_list:
+        base_en_list = [base_en]
+    
+    # Japanese query building with POS heuristics
+    japanese_queries.append(base_jp)
+    
+    if "動詞" in pos or "verb" in pos:
+        # Verbs: add the action with common objects
+        # Examples: 食べる→食べ物 (food), 飲む→飲み物 (beverage)
+        if base_jp.endswith("る"):
+            variant = base_jp[:-2] + "き"  # e.g., 食べる→食べき
+            japanese_queries.append(variant)
+        elif base_jp.endswith("む"):
+            variant = base_jp[:-1] + "み"  # e.g., 飲む→飲み
+            japanese_queries.append(variant)
+    
+    elif "名詞" in pos or "noun" in pos:
+        # Nouns: use as-is (already have it), might add plurals
+        # Irasutoya often has themed collections
+        japanese_queries.append(f"{base_jp}集")  # e.g., 猫集 (cat collection)
+    
+    elif "形容詞" in pos or "adjective" in pos:
+        # Adjectives: search for things with this quality
+        # Keep base form, will find things that are this color/quality
+        pass
+    
+    # English query building - use all meanings as primary queries
+    for en_term in base_en_list:
+        english_queries.append(en_term)
+    
+    # Add complementary search terms for diversity
+    # If it's a noun, add the dictionary form
+    if "名詞" in pos or "noun" in pos:
+        # Add English variants if we have multiple meanings
+        if len(base_en_list) < 2 and base_en:
+            english_queries.append(base_en)
+    
+    # If it's a verb, add gerund form for English searches
+    if ("動詞" in pos or "verb" in pos) and base_en_list:
+        first_en = base_en_list[0]
+        if not first_en.endswith("ing"):
+            english_queries.append(f"{first_en}ing")
+    
+    print(f"[Image] POS '{pos}': JP queries={japanese_queries}, EN queries={english_queries}")
+    return japanese_queries, english_queries
+
+
 async def fetch_candidates(word: Word) -> List[ImageCandidate]:
     """
-    Main entry point: searches Irasutoya (JP) and DuckDuckGo (EN)
-    concurrently, then returns candidates immediately WITHOUT waiting
-    for all thumbnails to download.
+    Main entry point: searches Irasutoya (JP) and Bing (EN)
+    concurrently with POS-based query optimization.
     
     This allows the picker to show immediately with placeholders,
     then thumbnails load in the background.
 
     Args:
-        word (Word): surface, dictionary_form, meaning
+        word (Word): surface, dictionary_form, reading, pos, meaning
 
     Returns:
         List[ImageCandidate]: candidates without thumbnail_data (will load async)
     """
-    import re
-    japanese_query = word.dictionary_form or word.surface
-    english_query = word.meaning or word.surface
-    # Split English meanings into multiple search queries to improve result variety
-    english_queries = [q.strip() for q in re.split(r"[;,、/]+", english_query) if q.strip()]
-    if not english_queries:
-        english_queries = [english_query]
+    # Build optimized queries based on Part of Speech
+    jp_queries, en_queries = _build_search_queries_for_pos(word)
     
     async with aiohttp.ClientSession() as session:
         loop = asyncio.get_event_loop()
 
-        ira_task = _search_irasutoya(japanese_query, session)
+        # Search multiple Japanese queries concurrently
+        ira_futures = [_search_irasutoya(q, session, max_results=6) for q in jp_queries]
+        
         # Run multiple Bing queries in executor to diversify results
-        bing_futures = [loop.run_in_executor(None, _search_bing_sync, q) for q in english_queries]
-        ira_results, *bing_results_lists = await asyncio.gather(ira_task, *bing_futures)
-        # Flatten bing results and deduplicate by URL
+        bing_futures = [loop.run_in_executor(None, _search_bing_sync, q) for q in en_queries]
+        
+        # Gather all results
+        ira_results_lists, *bing_results_lists = await asyncio.gather(
+            asyncio.gather(*ira_futures),
+            *bing_futures
+        )
+        
+        # Flatten Irasutoya results (from multiple queries) and deduplicate
+        ira_results = []
+        ira_seen_urls = set()
+        for ira_list in ira_results_lists:
+            for c in ira_list:
+                if c.url not in ira_seen_urls:
+                    ira_seen_urls.add(c.url)
+                    ira_results.append(c)
+        
+        # Flatten Bing results and deduplicate by URL
         bing_results = []
-        seen_urls = set()
+        bing_seen_urls = set()
         for br in bing_results_lists:
             for c in br:
-                if c.url not in seen_urls:
-                    seen_urls.add(c.url)
+                if c.url not in bing_seen_urls:
+                    bing_seen_urls.add(c.url)
                     bing_results.append(c)
 
+        # Irasutoya first, then Bing for additional variety
         all_candidates: List[ImageCandidate] = ira_results + bing_results
         
         if not all_candidates:
-            print(f"[Image] No candidates found for '{japanese_query}")
+            print(f"[Image] No candidates found for word '{word.surface}'")
             return []
                 
-    print(f"[Image] {len(all_candidates)} candidates found (thumbnails load async)")
+    print(f"[Image] {len(all_candidates)} candidates found (Bing: {len(bing_results)}, Irasutoya: {len(ira_results)})")
     return all_candidates
 
 

@@ -110,7 +110,10 @@ def build_sentence_furigana(morphemes: list[Any]) -> str:
         surface = m.surface()
         reading = _kata_to_hira(m.reading_form())
         if kanji_re.search(surface) and reading and reading != surface:
-            parts.append(f"{surface}[{reading}]")
+            if parts:
+                parts.append(f" {surface}[{reading}]")
+            else:
+                parts.append(f"{surface}[{reading}]")
         else:
             parts.append(surface)
     return "".join(parts)
