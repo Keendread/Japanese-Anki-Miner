@@ -86,7 +86,11 @@ class LoadingToast:
         self._on_all_ready = on_all_ready
         self._root: Optional[tk.Toplevel] = None
         self._labels: dict[str, tk.Label] = {}
-        self._done: dict[str, bool] = {k: False for k, _ in self._ROWS}
+        self._done: dict[str, bool] = {
+            "ocr":    ocr_event.is_set(),
+            "parser": parser_event.is_set(),
+            "dict":   dict_event.is_set(),
+        }
         # Store events at construction time so create() can both check
         # already-fired events AND start watchers for pending ones.
         self._events = {
@@ -132,7 +136,6 @@ class LoadingToast:
             row = tk.Frame(rows_frame, bg=self._BG)
             row.pack(fill=tk.X, pady=rescale(2))
 
-            # Static label
             tk.Label(
                 row,
                 text=label_text,
@@ -141,7 +144,6 @@ class LoadingToast:
                 anchor="w", width=rescale(22),
             ).pack(side=tk.LEFT)
 
-            # Dynamic status label — updated by _set_status()
             status = tk.Label(
                 row,
                 text="loading…",
@@ -152,21 +154,25 @@ class LoadingToast:
             status.pack(side=tk.RIGHT)
             self._labels[key] = status
 
-        # Immediately tick any subsystems that already finished before the
-        # window was created (parser and dictionary are usually fast and fire
-        # before the main thread gets around to building this UI).
-        for key, event in self._events.items():
-            if event.is_set():
-                self._set_status(key, done=True)
+        # Sync label visuals to match _done state captured at __init__ time.
+        # This correctly shows ticks for subsystems that finished before
+        # create() ran on the main thread.
+        for key in self._done:
+            if self._done[key]:
+                lbl = self._labels.get(key)
+                if lbl:
+                    lbl.config(text="✓  ready", fg=self._DONE_FG)
 
         self._root.update_idletasks()
 
-        # Start watcher threads only for subsystems still loading.
-        # Doing this here (inside create, on the main thread) guarantees the
-        # window and all label widgets exist before any watcher can post an
-        # update — so status updates never arrive before the UI is ready.
+        # If everything already done, dismiss and skip starting any watchers.
+        if all(self._done.values()):
+            self._root.after(800, self._dismiss)
+            return
+
+        # Only start watchers for subsystems not yet done.
         for key, event in self._events.items():
-            if not event.is_set():
+            if not self._done[key]:
                 threading.Thread(
                     target=self._watch,
                     args=(key, event),
