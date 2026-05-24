@@ -174,6 +174,7 @@ async def fetch_audio(word: Word, settings=None) -> Optional[AudioFile]:
         AudioFile with word_audio (and sentence_audio if available), or None if word audio fails
     """
     speaker_id = get_speaker_id(settings) if settings else VOICEVOX_SPEAKER_ID
+    sentence = word.best_sentence()
 
     async with aiohttp.ClientSession() as session:
         word_task = _fetch_single(
@@ -183,24 +184,11 @@ async def fetch_audio(word: Word, settings=None) -> Optional[AudioFile]:
             cache_reading=word.reading,
             speaker_id=speaker_id,
         )
-
-        sentence_fallback = None
-        if word.glossary and len(word.glossary) > 0:
-            sentence_fallback = word.glossary[0].get("example_jp")
-
-        sentence = word.full_sentence or sentence_fallback
-        if sentence_fallback and sentence == word.surface:
-            sentence = sentence_fallback
-
-        sentence_task = None
-        if sentence:
-            sentence_task = _fetch_single(
-                session,
-                text=sentence,
-                cache_key=sentence,
-                cache_reading=sentence,
-                speaker_id=speaker_id,
-            )
+        sentence_task = (
+            _fetch_single(session, text=sentence, cache_key=sentence,
+                          cache_reading=sentence, speaker_id=speaker_id)
+            if sentence else None
+        )
 
         if sentence_task:
             word_path, sentence_path = await asyncio.gather(word_task, sentence_task)

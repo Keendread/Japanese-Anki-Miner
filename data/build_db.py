@@ -1,39 +1,33 @@
 # One-time script to download and compile all dictionary sources into jmdict.db
 # Run automatically by main.py if DB is missing or outdated
 # Sources:
-#   JMDict XML      - EDRDG (JMdict/EDICT project)
-#   Kanjium pitch   - github.com/mifunetoshiro/kanjium
-#   JPDB frequency  - github.com/Kuuuube/jpdb-frequency-list
-#   JLPT data       - github.com/javdejong/nhk-pronunciation
-#   Tatoeba         - downloads.tatoeba.org
+#   Jitendex (Yomitan zip)  - jitendex.org  (replaces raw JMDict XML)
+#   Kanjium pitch           - github.com/mifunetoshiro/kanjium
+#   Wikipedia frequency     - github.com/mifunetoshiro/kanjium
+#   Tatoeba                 - downloads.tatoeba.org
 
 import os
 import sys
 import sqlite3
 import urllib.request
-import gzip
 import shutil
-import csv
-import xml.etree.ElementTree as ET
+import json
+import zipfile
+import re
+import time
+import threading
 import tkinter as tk
 from tkinter import ttk
-import threading
-import time
 
 
 def _get_runtime_dirs():
     """
     Returns (base_dir, raw_dir, db_path) rooted at the correct location
     whether running from source or as a frozen exe.
-
-    Frozen:  data/ lives next to JAM.exe (writable runtime location)
-    Source:  data/ lives at root/data/ (next to src/)
     """
     if getattr(sys, 'frozen', False):
-        # Running as PyInstaller exe — write data next to the exe
         app_dir = os.path.dirname(sys.executable)
     else:
-        # build_db.py lives in data/, go up to root then back into data/
         app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     base_dir = os.path.join(app_dir, "data")
@@ -45,17 +39,16 @@ def _get_runtime_dirs():
 BASE_DIR, RAW_DIR, DB_PATH = _get_runtime_dirs()
 DATA_DIR = BASE_DIR
 
-DB_VERSION = "1.0.0"
+DB_VERSION = "2.0.0"  # bumped — Jitendex replaces raw JMDict
 
 os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(RAW_DIR, exist_ok=True)
+os.makedirs(RAW_DIR,  exist_ok=True)
 
 SOURCES = {
-    "jmdict": {
-        "url":   "http://ftp.edrdg.org/pub/Nihongo/JMdict_e.gz",
-        "dest":  os.path.join(RAW_DIR, "JMdict.xml"),
-        "gz":    os.path.join(RAW_DIR, "JMdict.xml.gz"),
-        "label": "JMdict dictionary",
+    "jitendex": {
+        "url":   "https://github.com/stephenmk/stephenmk.github.io/releases/latest/download/jitendex-yomitan.zip",
+        "dest":  os.path.join(RAW_DIR, "jitendex-yomitan.zip"),
+        "label": "Jitendex dictionary (Yomitan format)",
     },
     "kanjium": {
         "url":   "https://raw.githubusercontent.com/mifunetoshiro/kanjium/master/data/source_files/raw/accents.txt",
@@ -88,11 +81,9 @@ SOURCES = {
 }
 
 
+# ── Progress window ───────────────────────────────────────────────────────────
+
 class ProgressWindow:
-    """
-    Tkinter progress window shown during DB build.
-    Supports being driven from a background thread via update queue.
-    """
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("JAM — Building Dictionary Database")
@@ -107,20 +98,16 @@ class ProgressWindow:
         outer = tk.Frame(self.root, padx=20, pady=16)
         outer.pack(fill=tk.BOTH, expand=True)
 
-        self.title_label = tk.Label(
+        tk.Label(
             outer,
             text="Building dictionary database (first run only)",
             font=("Segoe UI", 10, "bold"),
-            anchor="w"
-        )
-        self.title_label.pack(fill=tk.X)
+            anchor="w",
+        ).pack(fill=tk.X)
 
         self.step_label = tk.Label(
-            outer,
-            text="Starting...",
-            font=("Segoe UI", 9),
-            fg="#555555",
-            anchor="w"
+            outer, text="Starting...", font=("Segoe UI", 9),
+            fg="#555555", anchor="w",
         )
         self.step_label.pack(fill=tk.X, pady=(4, 8))
 
@@ -129,19 +116,11 @@ class ProgressWindow:
         bar_row.columnconfigure(0, weight=1)
         bar_row.columnconfigure(1, minsize=40)
 
-        self.progress = ttk.Progressbar(
-            bar_row,
-            orient="horizontal",
-            mode="determinate"
-        )
+        self.progress = ttk.Progressbar(bar_row, orient="horizontal", mode="determinate")
         self.progress.grid(row=0, column=0, sticky="ew", padx=(0, 8))
 
         self.pct_label = tk.Label(
-            bar_row,
-            text="0%",
-            font=("Segoe UI", 9),
-            anchor="e",
-            width=4
+            bar_row, text="0%", font=("Segoe UI", 9), anchor="e", width=4
         )
         self.pct_label.grid(row=0, column=1, sticky="e")
 
@@ -149,19 +128,14 @@ class ProgressWindow:
         self._pending_pct  = None
         self._close_flag   = False
 
-        self.root.protocol("WM_DELETE_WINDOW", lambda: None)  # prevent close
+        self.root.protocol("WM_DELETE_WINDOW", lambda: None)
         self.root.update()
 
     def set_step(self, text: str, pct: float):
-        """Thread-safe: schedule a label + progress bar update."""
         self._pending_step = text
         self._pending_pct  = pct
 
     def pump(self) -> bool:
-        """
-        Call repeatedly from the main thread to flush pending updates.
-        Returns False when the window has been closed (build finished).
-        """
         if self._pending_step is not None:
             self.step_label.config(text=self._pending_step)
             self._pending_step = None
@@ -185,6 +159,8 @@ class ProgressWindow:
         self._close_flag = True
 
 
+# ── Download helpers ──────────────────────────────────────────────────────────
+
 def _download(url: str, dest: str, label: str):
     print(f"[Build] Downloading {label}...")
     req = urllib.request.Request(url, headers={"User-Agent": "JAM/1.0"})
@@ -196,16 +172,8 @@ def _download(url: str, dest: str, label: str):
         raise RuntimeError(f"Failed to download {label}: {e}")
 
 
-def _decompress_gz(gz_path: str, dest_path: str):
-    print(f"[Build] Decompressing {os.path.basename(gz_path)}...")
-    with gzip.open(gz_path, "rb") as f_in:
-        with open(dest_path, "wb") as f_out:
-            shutil.copyfileobj(f_in, f_out)
-
-
 def _decompress_bz2(bz2_path: str, dest_path: str):
-    import bz2
-    import tarfile
+    import bz2, tarfile
     print(f"[Build] Decompressing {os.path.basename(bz2_path)}...")
     if bz2_path.endswith(".tar.bz2"):
         with tarfile.open(bz2_path, "r:bz2") as tar:
@@ -219,6 +187,8 @@ def _decompress_bz2(bz2_path: str, dest_path: str):
             with open(dest_path, "wb") as f_out:
                 shutil.copyfileobj(f_in, f_out)
 
+
+# ── DB schema ─────────────────────────────────────────────────────────────────
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS db_meta (
@@ -289,76 +259,331 @@ CREATE INDEX IF NOT EXISTS idx_tatoeba_links  ON tatoeba_links(entry_id);
 """
 
 
-import json
-import re
+# ── Structured-content helpers ────────────────────────────────────────────────
+
+def _leaf_text(node) -> str:
+    """Plain-text content of a node, skipping furigana rt tags and SVG."""
+    if node is None:
+        return ""
+    if isinstance(node, str):
+        return node
+    if isinstance(node, list):
+        return " ".join(p for p in (_leaf_text(c) for c in node) if p).strip()
+    if isinstance(node, dict):
+        if node.get("tag") in ("svg", "path", "circle", "rt"):
+            return ""
+        return _leaf_text(node.get("content", ""))
+    return ""
 
 
-def _parse_jmdict(xml_path: str, conn: sqlite3.Connection, progress_cb=None):
-    """Parse JMDict XML and insert entries. Only extracts English glosses."""
-    print("[Build] Parsing JMdict XML...")
-    tree    = ET.parse(xml_path)
-    root    = tree.getroot()
-    entries = root.findall("entry")
-    total   = len(entries)
-    cur     = conn.cursor()
+def _dc(node) -> str:
+    """Returns node['data']['content'] or ''."""
+    if isinstance(node, dict):
+        return (node.get("data") or {}).get("content", "")
+    return ""
 
-    for i, entry in enumerate(entries):
-        entry_id    = int(entry.findtext("ent_seq"))
-        kanji_forms = [k.findtext("keb") for k in entry.findall("k_ele")]
-        kana_forms  = [r.findtext("reb") for r in entry.findall("r_ele")]
 
+def _flat(content) -> list:
+    """Normalises content to a flat list."""
+    if content is None:
+        return []
+    if isinstance(content, list):
+        return content
+    return [content]
+
+
+def _parse_sense_group(sg: dict) -> list:
+    """
+    Parses a sense-group node (div or li with data.content="sense-group").
+    Returns list of dicts: {pos, glosses, example_jp, example_en, domain}.
+    """
+    pos_parts   = []
+    sense_nodes = []
+
+    for child in _flat(sg.get("content")):
+        dc = _dc(child)
+        if dc == "part-of-speech-info":
+            t = _leaf_text(child.get("content", ""))
+            if t:
+                pos_parts.append(t)
+        elif dc == "sense":
+            sense_nodes.append(child)
+        elif child.get("tag") in ("ol", "ul") and not dc:
+            # Jitendex wraps sense li nodes in an ol/ul with no data.content marker.
+            # e.g. sense-group > ol > li[data.content="sense"]
+            for li in _flat(child.get("content")):
+                if isinstance(li, dict) and _dc(li) == "sense":
+                    sense_nodes.append(li)
+
+    pos_str = ", ".join(pos_parts)
+    results = []
+
+    for sense in sense_nodes:
+        glosses    = []
+        example_jp = None
+        example_en = None
+        domain     = ""
+
+        for item in _flat(sense.get("content")):
+            dc = _dc(item)
+
+            if dc == "glossary":
+                for li in _flat(item.get("content")):
+                    if isinstance(li, dict):
+                        text = _leaf_text(li.get("content", ""))
+                    else:
+                        text = _leaf_text(li)
+                    if text:
+                        glosses.append(text)
+
+            elif dc in ("extra-info", "example", "examples"):
+                jp, en = _find_example(item)
+                if jp and not example_jp:
+                    example_jp = jp
+                    example_en = en
+
+            elif dc in ("domain", "field"):
+                domain = _leaf_text(item.get("content", ""))
+
+        if glosses:
+            results.append({
+                "pos":        pos_str,
+                "glosses":    glosses,
+                "example_jp": example_jp,
+                "example_en": example_en,
+                "domain":     domain,
+            })
+
+    return results
+
+
+def _find_example(node) -> tuple:
+    """
+    Recursively finds the first example-sentence node.
+    Returns (japanese_str, english_str) or (None, None).
+    """
+    if isinstance(node, list):
+        for child in node:
+            jp, en = _find_example(child)
+            if jp:
+                return jp, en
+        return None, None
+    if not isinstance(node, dict):
+        return None, None
+
+    if _dc(node) == "example-sentence":
+        jp_parts, en_parts = [], []
+        _collect_lang(node.get("content", []), jp_parts, en_parts)
+        jp = "".join(jp_parts).strip()
+        en = "".join(en_parts).strip()
+        return (jp or None), (en or None)
+
+    for child in _flat(node.get("content")):
+        jp, en = _find_example(child)
+        if jp:
+            return jp, en
+    return None, None
+
+
+def _collect_lang(node, jp: list, en: list):
+    """Walk node tree, sorting text into jp/en by lang attribute."""
+    if node is None:
+        return
+    if isinstance(node, str):
+        jp.append(node)
+        return
+    if isinstance(node, list):
+        for child in node:
+            _collect_lang(child, jp, en)
+        return
+    if isinstance(node, dict):
+        if node.get("tag") == "rt":
+            return
+        lang = node.get("lang", "")
+        if lang == "en":
+            en.append(_leaf_text(node))
+        else:
+            _collect_lang(node.get("content", []), jp, en)
+
+
+def _parse_structured_content(sc: dict) -> list:
+    """
+    Parses one top-level structured-content object (field[5][0]).
+    Handles both:
+      - div[data.content="sense-group"]  (original structure)
+      - ul[data.content="sense-groups"] > li[data.content="sense-group"]  (newer structure)
+    Returns flat list of sense dicts.
+    """
+    senses = []
+    for child in _flat(sc.get("content")):
+        dc = _dc(child)
+        if dc == "sense-group":
+            # Original structure: sense-group directly in root content
+            senses.extend(_parse_sense_group(child))
+        elif dc == "sense-groups":
+            # Newer structure: sense-groups container (ul) > sense-group items (li)
+            for li in _flat(child.get("content")):
+                if isinstance(li, dict) and _dc(li) == "sense-group":
+                    senses.extend(_parse_sense_group(li))
+    return senses
+
+
+def _extract_pos_from_tags(tag_string: str) -> str:
+    """Fallback POS from field[2] tag codes (often empty in Jitendex)."""
+    TAG_MAP = {
+        "n": "noun", "v1": "verb", "v5": "verb", "vk": "verb",
+        "vs": "verb", "vi": "verb", "vt": "verb",
+        "adj-i": "adjective", "adj-na": "adjective", "adj-no": "adjective",
+        "adv": "adverb", "prt": "particle", "conj": "conjunction",
+        "int": "interjection", "pref": "prefix", "suf": "suffix",
+        "aux": "auxiliary", "aux-v": "auxiliary", "aux-adj": "auxiliary",
+        "exp": "expression", "num": "numeral", "pn": "pronoun",
+    }
+    tags = tag_string.split() if tag_string else []
+    seen = []
+    for t in tags:
+        m = TAG_MAP.get(t)
+        if m and m not in seen:
+            seen.append(m)
+    return ", ".join(seen)
+
+
+# ── Jitendex parser ───────────────────────────────────────────────────────────
+
+def parse_jitendex(zip_path: str, conn: sqlite3.Connection):
+    """
+    Reads all term_bank_N.json files from the Jitendex Yomitan zip and
+    populates entries + senses tables.
+
+    Yomitan term bank entry format:
+        [0] term         str
+        [1] reading      str  (kana; may be "" if term is already kana)
+        [2] def_tags     str  (often empty in Jitendex — POS is in structured-content)
+        [3] rules        str  (conjugation rules, unused)
+        [4] score        int  (unused)
+        [5] definitions  list (one structured-content object per entry)
+        [6] sequence     int  (stable entry ID)
+        [7] term_tags    str  (JLPT tags etc.)
+    """
+    print("[Build] Parsing Jitendex zip...")
+    cur = conn.cursor()
+
+    kanji_re = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]")
+    entries_map: dict = {}   # seq_id -> {kanji: set, kana: set}
+    senses_rows = []
+
+    jitendex_version = "unknown"
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        if "index.json" in zf.namelist():
+            with zf.open("index.json") as f:
+                meta = json.load(f)
+                jitendex_version = meta.get("revision", meta.get("version", "unknown"))
+
+        term_banks = sorted(
+            [n for n in zf.namelist() if re.match(r"term_bank_\d+\.json$", n)],
+            key=lambda n: int(re.search(r"\d+", n).group()),
+        )
+        total_banks = len(term_banks)
+        print(f"[Build] {total_banks} term bank file(s) found.")
+
+        for bank_idx, bank_name in enumerate(term_banks):
+            with zf.open(bank_name) as f:
+                entries = json.load(f)
+
+            for raw in entries:
+                if len(raw) < 7:
+                    continue
+
+                term     = raw[0]
+                reading  = raw[1] or raw[0]
+                def_tags = raw[2]
+                defs     = raw[5]
+                seq_id   = raw[6]
+
+                if seq_id not in entries_map:
+                    entries_map[seq_id] = {"kanji": set(), "kana": set()}
+
+                if kanji_re.search(term):
+                    entries_map[seq_id]["kanji"].add(term)
+                else:
+                    entries_map[seq_id]["kana"].add(term)
+                entries_map[seq_id]["kana"].add(reading)
+
+                # Fallback POS from field[2] (often empty)
+                fallback_pos = _extract_pos_from_tags(def_tags)
+
+                for def_node in defs:
+                    if isinstance(def_node, str):
+                        gloss = def_node.strip()
+                        if gloss:
+                            senses_rows.append((seq_id, fallback_pos, "", gloss, None, None))
+                        continue
+                    if not isinstance(def_node, dict):
+                        continue
+                    if def_node.get("type") != "structured-content":
+                        continue
+
+                    parsed_senses = _parse_structured_content(def_node)
+
+                    if not parsed_senses:
+                        # Only fall back if there are genuinely no sense-groups
+                        content = def_node.get("content", [])
+                        has_sense_group = any(
+                            isinstance(c, dict) and _dc(c) in ("sense-group", "sense-groups")
+                            for c in _flat(content)
+                        )
+                        if not has_sense_group:
+                            # Try to extract glossary list items directly
+                            glosses_found = []
+                            for child in _flat(content):
+                                if isinstance(child, dict) and _dc(child) in ("glossary", "sense"):
+                                    for li in _flat(child.get("content", [])):
+                                        text = _leaf_text(li.get("content", "") if isinstance(li, dict) else li).strip()
+                                        if text:
+                                            glosses_found.append(text)
+                            if glosses_found:
+                                senses_rows.append((seq_id, fallback_pos, "", "; ".join(glosses_found), None, None))
+                        continue
+
+                    for s in parsed_senses:
+                        pos   = s["pos"] or fallback_pos
+                        domain = s["domain"]
+                        gloss  = "; ".join(s["glosses"])
+                        senses_rows.append((
+                            seq_id, pos, domain, gloss,
+                            s["example_jp"], s["example_en"],
+                        ))
+
+            if bank_idx % 10 == 0:
+                print(f"[Build] Jitendex: processed {bank_idx+1}/{total_banks} banks...")
+
+    print(f"[Build] Inserting {len(entries_map)} entries...")
+    for seq_id, forms in entries_map.items():
+        kanji_list = sorted(forms["kanji"])
+        kana_list  = sorted(forms["kana"])
         cur.execute(
             "INSERT OR REPLACE INTO entries (entry_id, kanji_forms, kana_forms) VALUES (?,?,?)",
-            (
-                entry_id,
-                json.dumps(kanji_forms, ensure_ascii=False),
-                json.dumps(kana_forms,  ensure_ascii=False),
-            )
+            (seq_id,
+             json.dumps(kanji_list, ensure_ascii=False),
+             json.dumps(kana_list,  ensure_ascii=False)),
         )
 
-        for sense in entry.findall("sense"):
-            pos_tags    = [p.text for p in sense.findall("pos")   if p.text]
-            domain_tags = [d.text for d in sense.findall("field") if d.text]
-            misc_tags   = [m.text for m in sense.findall("misc")  if m.text]
-            all_pos     = pos_tags + misc_tags
+    print(f"[Build] Inserting {len(senses_rows)} senses...")
+    cur.executemany(
+        "INSERT INTO senses (entry_id, pos, domain, gloss, example_jp, example_en) VALUES (?,?,?,?,?,?)",
+        senses_rows,
+    )
 
-            glosses = [
-                g.text for g in sense.findall("gloss")
-                if g.get("{http://www.w3.org/XML/1998/namespace}lang", "eng") == "eng"
-                and g.text
-            ]
-
-            example_jp = example_en = None
-            ex_elem = sense.find("example")
-            if ex_elem is not None:
-                for ex_sent in ex_elem.findall("ex_sent"):
-                    lang = ex_sent.get("{http://www.w3.org/XML/1998/namespace}lang", "")
-                    if lang == "jpn":
-                        example_jp = ex_sent.text
-                    elif lang == "eng":
-                        example_en = ex_sent.text
-
-            if glosses:
-                cur.execute(
-                    """INSERT INTO senses
-                       (entry_id, pos, domain, gloss, example_jp, example_en)
-                       VALUES (?,?,?,?,?,?)""",
-                    (
-                        entry_id,
-                        ", ".join(all_pos),
-                        ", ".join(domain_tags),
-                        "; ".join(glosses),
-                        example_jp,
-                        example_en,
-                    )
-                )
-
-        if i % 1000 == 0:
-            print(f"[Build] JMdict: {i}/{total} entries processed...")
-
+    cur.execute(
+        "INSERT OR REPLACE INTO db_meta (key, value) VALUES ('jitendex_version', ?)",
+        (jitendex_version,),
+    )
     conn.commit()
-    print(f"[Build] JMdict: inserted {total} entries.")
+    print(f"[Build] Jitendex: {len(entries_map)} entries, {len(senses_rows)} senses.")
+    print(f"[Build] Jitendex version: {jitendex_version}")
 
+
+# ── Pitch accent ──────────────────────────────────────────────────────────────
 
 def _parse_kanjium(txt_path: str, conn: sqlite3.Connection):
     print("[Build] Parsing Kanjium pitch accent data...")
@@ -403,73 +628,66 @@ def _parse_kanjium(txt_path: str, conn: sqlite3.Connection):
         """INSERT INTO pitch_accent
            (entry_id, expression, reading, pitch_pattern, pitch_category)
            VALUES (?,?,?,?,?)""",
-        rows
+        rows,
     )
     conn.commit()
     print(f"[Build] Kanjium: inserted {len(rows)} pitch accent entries.")
 
 
+# ── Frequency ─────────────────────────────────────────────────────────────────
+
 def _parse_jpdb_freq(txt_path: str, conn: sqlite3.Connection):
     print("[Build] Parsing frequency list...")
     cur  = conn.cursor()
     rows = []
-
     with open(txt_path, encoding="utf-8") as f:
         for rank, line in enumerate(f, start=1):
             parts = line.strip().split("\t")
             if not parts or not parts[0].strip():
                 continue
-            expression = parts[0].strip()
-            rows.append((expression, rank))
-
-    cur.executemany(
-        "INSERT INTO frequency (expression, frequency_rank) VALUES (?,?)",
-        rows
-    )
+            rows.append((parts[0].strip(), rank))
+    cur.executemany("INSERT INTO frequency (expression, frequency_rank) VALUES (?,?)", rows)
     conn.commit()
-    print(f"[Build] Frequency list: inserted {len(rows)} entries.")
+    print(f"[Build] Frequency: inserted {len(rows)} entries.")
 
 
-def _insert_jlpt_from_jmdict(conn: sqlite3.Connection):
-    """Extracts JLPT level tags embedded directly in JMdict entries."""
-    print("[Build] Extracting JLPT data from JMdict tags...")
+# ── JLPT ──────────────────────────────────────────────────────────────────────
+
+def _extract_jlpt_from_jitendex(zip_path: str, conn: sqlite3.Connection):
+    """
+    Jitendex carries JLPT level as term tags (field[7] of each bank entry).
+    """
+    print("[Build] Extracting JLPT levels from Jitendex...")
     cur = conn.cursor()
-
-    JLPT_TAGS = {
-        "jlpt-1": "N1",
-        "jlpt-2": "N2",
-        "jlpt-3": "N3",
-        "jlpt-4": "N4",
-        "jlpt-5": "N5",
-    }
-
-    xml_path = SOURCES["jmdict"]["dest"]
-    if not os.path.exists(xml_path):
-        print("[Build] JMdict XML not found, skipping JLPT extraction.")
-        return
-
-    tree = ET.parse(xml_path)
-    root = tree.getroot()
     rows = []
 
-    for entry in root.findall("entry"):
-        kanji_forms = [k.findtext("keb") for k in entry.findall("k_ele")]
-        kana_forms  = [r.findtext("reb") for r in entry.findall("r_ele")]
-        all_forms   = kanji_forms + kana_forms
+    JLPT_TAGS = {"jlpt-1": "N1", "jlpt-2": "N2", "jlpt-3": "N3",
+                 "jlpt-4": "N4", "jlpt-5": "N5"}
 
-        for sense in entry.findall("sense"):
-            for misc in sense.findall("misc"):
-                level = JLPT_TAGS.get(misc.text)
-                if level:
-                    for form in all_forms:
-                        if form:
-                            rows.append((form, level))
-                    break
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        term_banks = sorted(
+            [n for n in zf.namelist() if re.match(r"term_bank_\d+\.json$", n)],
+            key=lambda n: int(re.search(r"\d+", n).group()),
+        )
+        for bank_name in term_banks:
+            with zf.open(bank_name) as f:
+                entries = json.load(f)
+            for raw in entries:
+                if len(raw) < 8:
+                    continue
+                term      = raw[0]
+                term_tags = raw[7] if raw[7] else ""
+                for tag, level in JLPT_TAGS.items():
+                    if tag in term_tags.split():
+                        rows.append((term, level))
+                        break
 
     cur.executemany("INSERT INTO jlpt (expression, level) VALUES (?,?)", rows)
     conn.commit()
-    print(f"[Build] JLPT: inserted {len(rows)} entries from JMdict tags.")
+    print(f"[Build] JLPT: inserted {len(rows)} entries from Jitendex tags.")
 
+
+# ── Tatoeba ───────────────────────────────────────────────────────────────────
 
 def _parse_tatoeba(jpn_path: str, eng_path: str, links_path: str,
                    conn: sqlite3.Connection):
@@ -521,7 +739,7 @@ def _parse_tatoeba(jpn_path: str, eng_path: str, links_path: str,
 
     cur.executemany(
         "INSERT INTO tatoeba (japanese, english) VALUES (?,?)",
-        tatoeba_rows
+        tatoeba_rows,
     )
     conn.commit()
     print(f"[Build] Tatoeba: inserted {len(tatoeba_rows)} sentence pairs.")
@@ -531,15 +749,14 @@ def _parse_tatoeba(jpn_path: str, eng_path: str, links_path: str,
 
 
 def _link_tatoeba_to_entries(conn: sqlite3.Connection):
+    from collections import defaultdict
     cur = conn.cursor()
     print("[Build] Building sentence word index...")
 
     sentences = cur.execute("SELECT id, japanese FROM tatoeba").fetchall()
 
-    from collections import defaultdict
-
     index    = defaultdict(list)
-    kanji_re = re.compile(r'[\u4e00-\u9fff\u3400-\u4dbf]')
+    kanji_re = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]")
 
     print(f"[Build] Indexing {len(sentences)} sentences...")
     for tat_id, japanese in sentences:
@@ -575,17 +792,15 @@ def _link_tatoeba_to_entries(conn: sqlite3.Connection):
 
     cur.executemany(
         "INSERT INTO tatoeba_links (entry_id, tatoeba_id) VALUES (?,?)",
-        links
+        links,
     )
     conn.commit()
     print(f"[Build] Tatoeba links: created {len(links)} word↔sentence links.")
 
 
+# ── Main build pipeline ───────────────────────────────────────────────────────
+
 def build(progress_window: ProgressWindow = None):
-    """
-    Full build pipeline. Called from a background thread.
-    Uses progress_window.set_step() for UI updates (thread-safe).
-    """
     def step(label: str, pct: float):
         print(f"[Build] {label} ({int(pct)}%)")
         if progress_window:
@@ -597,29 +812,25 @@ def build(progress_window: ProgressWindow = None):
         conn.executescript(SCHEMA)
         conn.commit()
 
+        # ── Downloads ──────────────────────────────────────────────────────
         download_steps = [
-            ("jmdict",        5,  "Downloading JMdict..."),
-            ("kanjium",       12, "Downloading Kanjium pitch data..."),
-            ("jpdb_freq",     18, "Downloading JPDB frequency list..."),
-            ("tatoeba_jpn",   28, "Downloading Tatoeba Japanese sentences..."),
-            ("tatoeba_eng",   34, "Downloading Tatoeba English sentences..."),
+            ("jitendex",      5,  "Downloading Jitendex dictionary..."),
+            ("kanjium",       14, "Downloading Kanjium pitch data..."),
+            ("jpdb_freq",     18, "Downloading frequency list..."),
+            ("tatoeba_jpn",   24, "Downloading Tatoeba Japanese sentences..."),
+            ("tatoeba_eng",   32, "Downloading Tatoeba English sentences..."),
             ("tatoeba_links", 40, "Downloading Tatoeba links..."),
         ]
 
         for key, pct, label in download_steps:
             src  = SOURCES[key]
             dest = src["dest"]
-            gz   = src.get("gz")
             bz2  = src.get("bz2")
 
             step(label, pct)
 
             if not os.path.exists(dest):
-                if gz:
-                    if not os.path.exists(gz):
-                        _download(src["url"], gz, src["label"])
-                    _decompress_gz(gz, dest)
-                elif bz2:
+                if bz2:
                     if not os.path.exists(bz2):
                         _download(src["url"], bz2, src["label"])
                     _decompress_bz2(bz2, dest)
@@ -628,18 +839,23 @@ def build(progress_window: ProgressWindow = None):
             else:
                 print(f"[Build] {src['label']} already downloaded, skipping.")
 
-        step("Parsing JMdict entries...", 42)
-        _parse_jmdict(SOURCES["jmdict"]["dest"], conn)
+        # ── Parse Jitendex ─────────────────────────────────────────────────
+        step("Parsing Jitendex entries...", 44)
+        parse_jitendex(SOURCES["jitendex"]["dest"], conn)
 
-        step("Parsing pitch accent data...", 58)
+        # ── Pitch accent ───────────────────────────────────────────────────
+        step("Parsing pitch accent data...", 62)
         _parse_kanjium(SOURCES["kanjium"]["dest"], conn)
 
-        step("Parsing frequency list...", 68)
+        # ── Frequency ──────────────────────────────────────────────────────
+        step("Parsing frequency list...", 70)
         _parse_jpdb_freq(SOURCES["jpdb_freq"]["dest"], conn)
 
-        step("Parsing JLPT levels...", 74)
-        _insert_jlpt_from_jmdict(conn)
+        # ── JLPT from Jitendex tags ────────────────────────────────────────
+        step("Extracting JLPT levels...", 74)
+        _extract_jlpt_from_jitendex(SOURCES["jitendex"]["dest"], conn)
 
+        # ── Tatoeba ────────────────────────────────────────────────────────
         step("Parsing Tatoeba sentences...", 78)
         _parse_tatoeba(
             SOURCES["tatoeba_jpn"]["dest"],
@@ -648,15 +864,16 @@ def build(progress_window: ProgressWindow = None):
             conn,
         )
 
+        # ── Finalise ───────────────────────────────────────────────────────
         step("Finalising database...", 96)
         cur = conn.cursor()
         cur.execute(
             "INSERT OR REPLACE INTO db_meta (key, value) VALUES ('version', ?)",
-            (DB_VERSION,)
+            (DB_VERSION,),
         )
         cur.execute(
             "INSERT OR REPLACE INTO db_meta (key, value) VALUES ('built_at', ?)",
-            (str(int(time.time())),)
+            (str(int(time.time())),),
         )
         conn.commit()
 
@@ -680,13 +897,10 @@ def build(progress_window: ProgressWindow = None):
         raise
 
 
-def run_with_progress():
-    """
-    Launches the progress window on the main thread and runs build()
-    in a background thread. Called by main.py when DB is missing.
-    """
-    win = ProgressWindow()
+# ── Entry points ──────────────────────────────────────────────────────────────
 
+def run_with_progress():
+    win = ProgressWindow()
     build_thread = threading.Thread(target=build, args=(win,), daemon=True)
     build_thread.start()
 
@@ -702,14 +916,11 @@ def run_with_progress():
 
 
 def needs_build() -> bool:
-    """Returns True if the DB is missing or version is outdated."""
     if not os.path.exists(DB_PATH):
         return True
     try:
         conn = sqlite3.connect(DB_PATH)
-        row  = conn.execute(
-            "SELECT value FROM db_meta WHERE key='version'"
-        ).fetchone()
+        row  = conn.execute("SELECT value FROM db_meta WHERE key='version'").fetchone()
         conn.close()
         return (row is None or row[0] != DB_VERSION)
     except Exception:

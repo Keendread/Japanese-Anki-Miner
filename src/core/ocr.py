@@ -60,6 +60,9 @@ def preprocess(image: Image.Image) -> Image.Image:
     white_pct = np.sum(bw == 255) / bw.size
     if white_pct < 0.02 or white_pct > 0.95:
         bw = cv2.bitwise_not(bw)
+        
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 3))
+    bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, close_kernel)
 
     image = Image.fromarray(bw).convert("RGB")
 
