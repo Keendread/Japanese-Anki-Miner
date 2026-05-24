@@ -165,16 +165,8 @@ def _score_regions(regions: List[TextRegion], img_w: int, img_h: int) -> float:
     ideal_min = 200
     ideal_max = img_w * img_h * 0.4
 
-    score = 0.0
-    for r in regions:
-        if not (ideal_min <= r.area <= ideal_max):
-            continue
-        # Reward aspect ratio closer to square.
-        # ratio = min(w,h) / max(w,h) — 1.0 = perfect square, 0.0 = infinitely thin
-        ratio = min(r.w, r.h) / max(r.w, r.h) if max(r.w, r.h) > 0 else 0
-        score += ratio
-
-    return score / len(regions)
+    good = sum(1 for r in regions if ideal_min <= r.area <= ideal_max)
+    return good / len(regions)
 
 
 def detect_regions(
@@ -234,7 +226,7 @@ def detect_regions(
     _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     white_ratio = np.sum(binary == 255) / binary.size
 
-    if white_ratio > 0.90:
+    if white_ratio > 0.75:
         # OTSU inverted the wrong way — dark background got classified as text.
         if mean_brightness < 128:
             # Dark background, bright text: keep only pixels above 85th percentile.
@@ -264,7 +256,7 @@ def detect_regions(
         try:
             cv2.imwrite(os.path.join(debug_dir, "detector_binary.png"), binary)
         except Exception: pass
-
+        
     # ── Dual-kernel: try horizontal and vertical, pick the better result ──────
 
     def _run_with_kernel(kx: int, ky: int) -> List[TextRegion]:
@@ -293,6 +285,14 @@ def detect_regions(
     h_score = _score_regions(h_regions, img_w, img_h)
     v_score = _score_regions(v_regions, img_w, img_h)
 
+    aspect = img_w / img_h if img_h > 0 else 1.0
+    if aspect >= 1.0:
+        # Wider than tall
+        h_score += 0.6
+    else:
+        # Taller than wide
+        v_score += 0.3
+    
     _log.debug(f"[Detector] H-kernel score={h_score:.2f} ({len(h_regions)} regions), "
                f"V-kernel score={v_score:.2f} ({len(v_regions)} regions)")
 
@@ -314,7 +314,7 @@ def detect_regions(
             dilated = cv2.dilate(binary, kernel, iterations=2)
             cv2.imwrite(os.path.join(debug_dir, "detector_dilated.png"), dilated)
         except Exception: pass
-
+        
     return regions
 
 
