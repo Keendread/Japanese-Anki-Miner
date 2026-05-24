@@ -145,7 +145,7 @@ def _ocr_all_regions(
     print(f"[_ocr_all_regions] Starting OCR of {len(regions)} region(s)")
     logging.info(f"[_ocr_all_regions] Starting OCR of {len(regions)} region(s)")
     
-    crops = [(region, region.crop_from(full_image, pad=6)) for region in regions]
+    crops = [(region, region.crop_from(full_image, pad=2)) for region in regions]
     results: List[Tuple[TextRegion, str]] = []
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -323,37 +323,32 @@ class CaptureController:
     # ── Mouse mode (smart crop) ───────────────────────────────────────────────
  
     def _trigger_mouse(self) -> None:
-        """
-        1. Capture generous initial region around cursor.
-        2. Run detector — finds the text line the cursor is on.
-        3. Crop tightly to that line → better OCR accuracy.
-        4. Single-word pipeline.
-        """
         try:
             x, y   = get_cursor_position()
             width  = self.settings.get("capture_width",  400)
             height = self.settings.get("capture_height", 120)
             logging.info(f"[Mouse] Cursor at ({x}, {y})")
             print(f"[Mouse] Cursor at ({x}, {y})")
- 
+
             initial = capture_region(x, y, width, height)
             logging.debug(f"[Mouse] Captured region: {initial.width}x{initial.height}")
- 
-            # Cursor is at image center after a center-crop
+
+            # Save the original capture for debugging/training — before smart crop
+            filepath = save_capture(initial)
+            logging.info(f"[Mouse] Capture saved to {filepath}")
+
             cropped, region = smart_crop(initial, width // 2, height // 2)
- 
+
             if region:
                 logging.info(f"[Mouse] Smart-cropped to {region.w}x{region.h}px (original {width}x{height}px)")
                 print(f"[Mouse] Smart-cropped to {region.w}x{region.h}px "
-                      f"(original {width}x{height}px)")
+                    f"(original {width}x{height}px)")
             else:
                 logging.warning(f"[Mouse] No region found — using full capture.")
                 print("[Mouse] No region found — using full capture.")
- 
-            filepath = save_capture(cropped)
-            logging.info(f"[Mouse] Capture saved to {filepath}")
+
             self._process(cropped, filepath)
- 
+
         except Exception as e:
             logging.error(f"[Mouse] Capture failed: {e}", exc_info=True)
             print(f"[Mouse] Failed: {e}")
@@ -388,43 +383,36 @@ class CaptureController:
                 filepath = save_capture(image)
                 if not _wait_for_ready():
                     return
-                
-                # Create debug subdirectory for detector images
-                debug_dir = os.path.join(os.path.dirname(filepath), "detector_debug")
-                
-                regions = detect_regions(image, debug_dir=debug_dir)
+
+                regions = detect_regions(image)
                 print(f"[BBox] {len(regions)} region(s) detected.")
-                
-                # Fallback: try progressively more sensitive parameters if no regions found
+
                 if not regions:
                     logging.info("[BBox] No regions detected — trying sensitive fallback #1")
-                    regions = detect_regions(image, min_area=20, dilation_x=10, dilation_y=2, debug_dir=debug_dir)
+                    regions = detect_regions(image, min_area=20, dilation_x=10, dilation_y=2)
                     print(f"[BBox] fallback #1: {len(regions)} region(s) detected.")
-                
+
                 if not regions:
                     logging.info("[BBox] Still no regions — trying fallback #2 (ultra-sensitive)")
-                    regions = detect_regions(image, min_area=10, dilation_x=8, dilation_y=1, debug_dir=debug_dir)
+                    regions = detect_regions(image, min_area=10, dilation_x=8, dilation_y=1)
                     print(f"[BBox] fallback #2: {len(regions)} region(s) detected.")
-                
+
                 if not regions:
                     logging.info("[BBox] Still no regions — trying fallback #3 (minimal threshold)")
-                    regions = detect_regions(image, min_area=5, dilation_x=5, dilation_y=1, debug_dir=debug_dir)
+                    regions = detect_regions(image, min_area=5, dilation_x=5, dilation_y=1)
                     print(f"[BBox] fallback #3: {len(regions)} region(s) detected.")
-                
-                # Fallback #4: Try Canny edge detection (works for very light/dark text)
+
                 if not regions:
                     logging.info("[BBox] No regions found — trying Canny edge detection fallback")
-                    regions = _detect_regions_canny(image, debug_dir=debug_dir)
+                    regions = _detect_regions_canny(image)
                     print(f"[BBox] Canny fallback: {len(regions)} region(s) detected.")
-                
-                # Last resort: use entire image as one region if still nothing
+
                 if not regions:
                     logging.warning("[BBox] No regions found after all fallbacks — using full image as one region")
                     print("[BBox] No regions found — using full image as fallback region")
-                    print(f"[BBox] DEBUG: Check captures/detector_debug/ to inspect preprocessed images")
                     w, h = image.size
                     regions = [TextRegion(x=0, y=0, w=w, h=h)]
-                
+
                 if len(regions) <= 1:
                     self._process(image, filepath)
                 else:
@@ -432,7 +420,7 @@ class CaptureController:
             except Exception as e:
                 logging.error(f"[BBox] Post-capture failed: {e}", exc_info=True)
                 print(f"[BBox] Post-capture failed: {e}")
- 
+
         threading.Thread(target=process, daemon=True).start()
 
     # ── Screen mode ───────────────────────────────────────────────────────────
