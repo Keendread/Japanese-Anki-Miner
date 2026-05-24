@@ -51,25 +51,26 @@ def preprocess(image: Image.Image) -> Image.Image:
     # Determine binarization direction based on background brightness
     if mean_brightness < 128:
         # Dark background, bright text → threshold to white text on black
-        _, bw = cv2.threshold(gray, 100, 255, cv2.THRESH_BINARY)
+        thresh_val = max(int(np.percentile(gray, 85)), 80)
+        _, bw = cv2.threshold(gray, thresh_val, 255, cv2.THRESH_BINARY)
     else:
         # Light background, dark text → invert so text becomes white on black
-        _, bw = cv2.threshold(gray, 160, 255, cv2.THRESH_BINARY_INV)
+        _, bw = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
     # If binarization produced almost nothing (wrong polarity), flip it
     white_pct = np.sum(bw == 255) / bw.size
     if white_pct < 0.02 or white_pct > 0.95:
         bw = cv2.bitwise_not(bw)
         
-    close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 3))
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, close_kernel)
 
     image = Image.fromarray(bw).convert("RGB")
 
     # Now upscale with NEAREST — crisp edges on binary, no halo artifacts
     w, h = image.size
-    TARGET_H = 96
-    TARGET_W = 96
+    TARGET_H = 64
+    TARGET_W = 64
     scale = max(
         TARGET_H / h if h < TARGET_H else 1.0,
         TARGET_W / w if w < TARGET_W else 1.0,
@@ -128,8 +129,8 @@ def extract_text(image: Image.Image) -> str:
     """
     try:
         model = get_model()
-        processed = preprocess(image)
-        text = model(processed)
+        # processed = preprocess(image)
+        text = model(image)
         return text.strip()
     except Exception as e:
         print(f"[OCR] Extraction failed: {e}")

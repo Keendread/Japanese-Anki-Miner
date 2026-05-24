@@ -423,22 +423,22 @@ class CaptureController:
                 if not _wait_for_ready():
                     return
 
-                regions = detect_regions(image)
+                regions = detect_regions(image, dilation_x=40, dilation_y=3)
                 print(f"[BBox] {len(regions)} region(s) detected.")
 
                 if not regions:
                     logging.info("[BBox] No regions detected — trying sensitive fallback #1")
-                    regions = detect_regions(image, min_area=20, dilation_x=10, dilation_y=2)
+                    regions = detect_regions(image, min_area=20, dilation_x=40, dilation_y=2)
                     print(f"[BBox] fallback #1: {len(regions)} region(s) detected.")
 
                 if not regions:
                     logging.info("[BBox] Still no regions — trying fallback #2 (ultra-sensitive)")
-                    regions = detect_regions(image, min_area=10, dilation_x=8, dilation_y=1)
+                    regions = detect_regions(image, min_area=10, dilation_x=40, dilation_y=1)
                     print(f"[BBox] fallback #2: {len(regions)} region(s) detected.")
 
                 if not regions:
                     logging.info("[BBox] Still no regions — trying fallback #3 (minimal threshold)")
-                    regions = detect_regions(image, min_area=5, dilation_x=5, dilation_y=1)
+                    regions = detect_regions(image, min_area=5, dilation_x=40, dilation_y=1)
                     print(f"[BBox] fallback #3: {len(regions)} region(s) detected.")
 
                 if not regions:
@@ -453,7 +453,11 @@ class CaptureController:
                     regions = [TextRegion(x=0, y=0, w=w, h=h)]
 
                 if len(regions) <= 1:
-                    self._process(image, filepath)
+                    if regions:
+                        cropped = regions[0].crop_from(image, pad=4)
+                        self._process(cropped, filepath)
+                    else:
+                        self._process(image, filepath)
                 else:
                     self._process_multi(image, regions, filepath)
             except Exception as e:
