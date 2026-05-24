@@ -257,14 +257,6 @@ def detect_regions(
             cv2.imwrite(os.path.join(debug_dir, "detector_binary.png"), binary)
         except Exception: pass
         
-    # After the "Last resort: adaptive threshold" block, before the dual-kernel section
-    print(f"[Detector] img={img_w}x{img_h} brightness={mean_brightness:.1f} white_ratio={white_ratio:.3f}")
-    if debug_dir == "":
-        # Always save debug images temporarily so we can inspect
-        import cv2 as _cv2
-        _cv2.imwrite("captures/debug_binary.png", binary)
-        _cv2.imwrite("captures/debug_gray.png", gray)
-
     # ── Dual-kernel: try horizontal and vertical, pick the better result ──────
 
     def _run_with_kernel(kx: int, ky: int) -> List[TextRegion]:
@@ -323,9 +315,6 @@ def detect_regions(
             cv2.imwrite(os.path.join(debug_dir, "detector_dilated.png"), dilated)
         except Exception: pass
         
-    for i, r in enumerate(regions):
-        print(f"[Detector] Region {i}: x={r.x} y={r.y} w={r.w} h={r.h} area={r.area}")
-
     return regions
 
 
