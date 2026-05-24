@@ -141,7 +141,7 @@ class LoadingToast:
                 text=label_text,
                 font=("Segoe UI", 9),
                 bg=self._BG, fg=self._LOADING_FG,
-                anchor="w", width=rescale(22),
+                anchor="w", width=22,
             ).pack(side=tk.LEFT)
 
             status = tk.Label(

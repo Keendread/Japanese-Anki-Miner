@@ -4,11 +4,23 @@ from tkinter import filedialog, messagebox, ttk
 import threading
 import queue
 import logging
+import ctypes
 
 from core.settings import DEFAULT_SETTINGS
 
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(1)
+except Exception:
+    ctypes.windll.user32.SetProcessDPIAware()
+
 _TK_ROOT = None
 
+def rescale(x):
+    try:
+        dpi = ctypes.windll.user32.GetDpiForSystem()
+        return int(x * (dpi / 96.0))
+    except Exception:
+        return x
 
 def preload_tkinter():
     global _TK_ROOT
@@ -53,7 +65,9 @@ class SettingsWindow:
         self.root = tk.Toplevel(_TK_ROOT)
         self.root.title("JAM Settings")
         self.root.resizable(True, True)
-        self.root.geometry("520x420")
+        w = rescale(520)
+        h = rescale(420)
+        self.root.geometry(f"{w}x{h}")
         self.root.attributes("-topmost", True)
         self.root.protocol("WM_DELETE_WINDOW", self._close)
         self._currently_held = set()
