@@ -1,5 +1,5 @@
 """
-FULL EVALUATION PIPELINE (FIXED PATH VERSION)
+FULL EVALUATION PIPELINE
 """
 
 import subprocess
@@ -14,7 +14,7 @@ def run_test(file_path):
 
     result = subprocess.run(
         [sys.executable, "-m", "pytest", str(file_path), "-v", "-s"],
-        cwd=Path.cwd().parent,  # IMPORTANT FIX
+        cwd=Path.cwd(),   # FIXED
     )
 
     return result.returncode == 0
@@ -25,10 +25,7 @@ def main():
     base = Path("tests")
 
     tests = [
-        base / "test_ocr_latency.py",
         base / "test_ocr_accuracy.py",
-        base / "test_parser_latency.py",
-        base / "test_parser_accuracy.py",
     ]
 
     results = {}

@@ -66,8 +66,7 @@ def check_dependencies():
     # build_db.py lives in data/ which is at ROOT_DIR/data/build_db.py
     try:
         data_dir = os.path.join(ROOT_DIR, "data")
-        sys.path.insert(0, data_dir)
-        import build_db
+        from data import build_db
         if build_db.needs_build():
             print("[Startup] Dictionary database missing or outdated — building now.")
             print("[Startup] This only happens once and may take a few minutes.")
