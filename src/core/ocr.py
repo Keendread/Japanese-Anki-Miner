@@ -65,8 +65,8 @@ def preprocess(image: Image.Image) -> Image.Image:
 
     # Now upscale with NEAREST — crisp edges on binary, no halo artifacts
     w, h = image.size
-    TARGET_H = 64
-    TARGET_W = 64
+    TARGET_H = 96
+    TARGET_W = 96
     scale = max(
         TARGET_H / h if h < TARGET_H else 1.0,
         TARGET_W / w if w < TARGET_W else 1.0,
