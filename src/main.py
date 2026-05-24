@@ -236,6 +236,9 @@ def _sync_anki():
 
 threading.Thread(target=_sync_anki, daemon=True).start()
 
+from core.audio import refresh_speaker_ids
+threading.Thread(target=refresh_speaker_ids, daemon=True).start()
+
 print(f"[Startup] Hotkey: {settings.get('capture_combo')}")
 print(f"[Startup] Capture mode: {settings.get('capture_mode', 'bbox')}")
 print("[Startup] Starting system tray icon...")

@@ -282,7 +282,6 @@ class CaptureController:
     def _on_press(self, key: Any) -> None:
         norm_key = self._normalize(key)
         self.pressed_keys.add(norm_key)
-        print(f"[Debug] pressed={norm_key!r}, combo={self.combo!r}, held={self.pressed_keys!r}, matches={self._matches_combo()}")
         if self._recording:
             return
         if self._matches_combo():
@@ -675,7 +674,7 @@ class CaptureController:
         def _run_audio():
             try:
                 logging.info(f"[Flow] Starting audio fetch for {card.source_word.surface}")
-                result = asyncio.run(audio.fetch_audio(card.source_word))
+                result = asyncio.run(audio.fetch_audio(card.source_word, settings=self.settings))
                 if result:
                     logging.info(f"[Flow] Audio fetched successfully")
                 else:

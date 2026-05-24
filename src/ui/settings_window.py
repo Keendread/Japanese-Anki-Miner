@@ -65,9 +65,36 @@ class SettingsWindow:
 
     def _build_ui(self):
         padding = 10
-        frame = ttk.Frame(self.root, padding=padding)
-        frame.pack(fill=tk.BOTH, expand=True)
+        
+        # ── Scrollable container ──────────────────────────────────────────────
+        container = tk.Frame(self.root)
+        container.pack(fill=tk.BOTH, expand=True)
 
+        canvas = tk.Canvas(container, borderwidth=0, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        frame = ttk.Frame(canvas, padding=padding)
+        frame_id = canvas.create_window((0, 0), window=frame, anchor="nw")
+
+        def _on_frame_configure(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _on_canvas_configure(event):
+            canvas.itemconfig(frame_id, width=event.width)
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        frame.bind("<Configure>", _on_frame_configure)
+        canvas.bind("<Configure>", _on_canvas_configure)
+        canvas.bind("<MouseWheel>", _on_mousewheel)
+        frame.bind("<MouseWheel>", _on_mousewheel)
+
+        # ── Settings rows ──────────────────────────
         row = 0
         self._add_label(frame, "Capture Hotkey:", row)
         self._vars["capture_combo"] = tk.StringVar(value=" ".join(self.settings.get("capture_combo", [])))
@@ -100,6 +127,41 @@ class SettingsWindow:
         self._add_entry(frame, self._vars["capture_height"], row)
         row += 1
 
+        self._add_separator(frame, row)
+        row += 1
+        
+        self._add_label(frame, "VOICEVOX Voice:", row)
+        # Build display names: "Zundamon (ずんだもん)"
+        from core.audio import VOICEVOX_SPEAKERS
+        self._speaker_options = VOICEVOX_SPEAKERS
+        speaker_display = [
+            f"{s['english']} ({s['japanese']})" for s in self._speaker_options
+        ]
+        current_id = self.settings.get("voicevox_speaker_id", 3)
+        current_idx = next(
+            (i for i, s in enumerate(self._speaker_options) if s["id"] == current_id),
+            0
+        )
+        self._vars["voicevox_speaker_id"] = tk.StringVar(
+            value=speaker_display[current_idx]
+        )
+        voice_combo = ttk.Combobox(
+            frame,
+            textvariable=self._vars["voicevox_speaker_id"],
+            values=speaker_display,
+            state="readonly",
+            width=30,
+        )
+        voice_combo.grid(row=row, column=1, sticky="ew", padx=(0, padding), pady=4)
+
+        preview_btn = ttk.Button(
+            frame,
+            text="▶ Preview",
+            command=self._preview_voice,
+        )
+        preview_btn.grid(row=row, column=2, sticky="ew", padx=(0, padding), pady=4)
+        row += 1
+        
         self._add_separator(frame, row)
         row += 1
 
@@ -196,6 +258,14 @@ class SettingsWindow:
             if width <= 0 or height <= 0:
                 raise ValueError("Width and height must be positive")
 
+            selected_voice = self._vars["voicevox_speaker_id"].get()
+            from core.audio import VOICEVOX_SPEAKERS
+            speaker = next(
+                (s for s in VOICEVOX_SPEAKERS
+                 if f"{s['english']} ({s['japanese']})" == selected_voice),
+                None
+            )
+
             updated = {
                 "capture_combo": combo,
                 "capture_mode": mode,
@@ -206,6 +276,7 @@ class SettingsWindow:
                 "anki_misc_info": self._vars["anki_misc_info"].get().strip(),
                 "anki_media_path": self._vars["anki_media_path"].get().strip(),
                 "anki_profile": self._vars["anki_profile"].get().strip(),
+                "voicevox_speaker_id": speaker["id"] if speaker else 3,
             }
 
             # Spawn background thread to save settings (don't block main thread on I/O)
@@ -381,6 +452,40 @@ class SettingsWindow:
                 return event.char.lower()
 
             return None
+        
+    def _preview_voice(self):
+        """Play a short preview of the selected voice."""
+        selected = self._vars["voicevox_speaker_id"].get()
+        speaker = next(
+            (s for s in self._speaker_options
+             if f"{s['english']} ({s['japanese']})" == selected),
+            None
+        )
+        if speaker is None:
+            return
+
+        import asyncio, threading, io
+        speaker_id = speaker["id"]
+
+        def _play():
+            try:
+                from core.audio import preview_speaker
+                import asyncio
+                audio_bytes = asyncio.run(preview_speaker(speaker_id))
+                if audio_bytes is None:
+                    print("[Settings] Preview failed — is VOICEVOX running?")
+                    return
+                # Play using winsound (Windows built-in, no extra deps)
+                import winsound, tempfile, os
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                    f.write(audio_bytes)
+                    tmp_path = f.name
+                winsound.PlaySound(tmp_path, winsound.SND_FILENAME)
+                os.unlink(tmp_path)
+            except Exception as e:
+                print(f"[Settings] Voice preview error: {e}")
+
+        threading.Thread(target=_play, daemon=True).start()
 
 
 def show_settings_window(settings, main_thread_queue=None, capture=None):
