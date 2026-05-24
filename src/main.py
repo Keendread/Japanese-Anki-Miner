@@ -125,6 +125,16 @@ def check_dependencies():
 
 
 def str_to_key(s: str):
+    # Normalize modifier aliases to their _l variant since pynput
+    # reports ctrl_l/ctrl_r, shift_l/shift_r etc on actual keypresses
+    _alias_map = {
+        "ctrl":  keyboard.Key.ctrl_l,
+        "shift": keyboard.Key.shift_l,
+        "alt":   keyboard.Key.alt_l,
+        "cmd":   keyboard.Key.cmd,
+    }
+    if s in _alias_map:
+        return _alias_map[s]
     try:
         return getattr(keyboard.Key, s)
     except AttributeError:
@@ -141,7 +151,7 @@ def on_show_settings():
     print("[Tray] Settings clicked")
     logging.info("[Main] Queueing show_settings_window task")
     try:
-        show_settings_window(settings, main_thread_queue)
+        show_settings_window(settings, main_thread_queue, capture=capture)
         logging.info("[Main] Settings window task queued successfully")
     except Exception as e:
         logging.error(f"[Main] Failed to queue settings task: {e}", exc_info=True)

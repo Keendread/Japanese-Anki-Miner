@@ -22,21 +22,20 @@ class SettingsWindow:
     _instance = None
 
     @classmethod
-    def show_window(cls, settings):
+    def show_window(cls, settings, capture=None):
         logging.info("[Settings] show_window called")
         if cls._instance is not None:
             logging.info("[Settings] Existing window found, lifting to front")
             try:
                 cls._instance.root.lift()
                 cls._instance.root.focus_force()
-                logging.info("[Settings] Window lifted successfully")
             except Exception as e:
                 logging.error(f"[Settings] Failed to lift window: {e}", exc_info=True)
             return
 
         logging.info("[Settings] Creating new SettingsWindow instance")
         try:
-            cls._instance = SettingsWindow(settings)
+            cls._instance = SettingsWindow(settings, capture=capture)
             logging.info("[Settings] SettingsWindow instance created")
             # Don't run a blocking show loop here; main loop will pump updates
             logging.info("[Settings] Window created and awaiting main loop pump")
@@ -44,10 +43,11 @@ class SettingsWindow:
             logging.error(f"[Settings] Failed to create or show window: {e}", exc_info=True)
             cls._instance = None
 
-    def __init__(self, settings):
+    def __init__(self, settings, capture=None):
         logging.info("[Settings] __init__ called")
         preload_tkinter()
         self.settings = settings
+        self._capture = capture
         self._event_queue = queue.Queue()  # Thread-safe queue for background thread communication
         logging.debug(f"[Settings] Creating Toplevel window from root: {_TK_ROOT}")
         self.root = tk.Toplevel(_TK_ROOT)
@@ -56,6 +56,7 @@ class SettingsWindow:
         self.root.geometry("520x420")
         self.root.attributes("-topmost", True)
         self.root.protocol("WM_DELETE_WINDOW", self._close)
+        self._currently_held = set()
         
         logging.info(f"[Settings] Window created: {self.root}")
         self._vars = {}
@@ -70,13 +71,22 @@ class SettingsWindow:
         row = 0
         self._add_label(frame, "Capture Hotkey:", row)
         self._vars["capture_combo"] = tk.StringVar(value=" ".join(self.settings.get("capture_combo", [])))
-        self._add_entry(frame, self._vars["capture_combo"], row)
+        
+        # Hotkey recorder button
+        self._hotkey_btn = ttk.Button(
+            frame,
+            text=self._vars["capture_combo"].get() or "Click to set hotkey",
+            command=self._start_hotkey_recording,
+        )
+        self._hotkey_btn.grid(row=row, column=1, columnspan=2, sticky="ew", padx=(0, padding), pady=4)
+        self._recording_hotkey = False
+        self._recorded_keys = []
         row += 1
 
         self._add_label(frame, "Capture Mode:", row)
         self._vars["capture_mode"] = tk.StringVar(value=self.settings.get("capture_mode", "bbox"))
         combo = ttk.Combobox(frame, textvariable=self._vars["capture_mode"], state="readonly")
-        combo["values"] = ["bbox", "mouse"]
+        combo["values"] = ["bbox", "mouse", "screen"]
         combo.grid(row=row, column=1, sticky="ew", padx=(0, padding), pady=4)
         row += 1
 
@@ -225,6 +235,10 @@ class SettingsWindow:
         for key, value in DEFAULT_SETTINGS.items():
             if key in self._vars:
                 self._vars[key].set(str(value) if not isinstance(value, list) else " ".join(value))
+        # Sync the hotkey button text to the reset value
+        default_combo = DEFAULT_SETTINGS.get("capture_combo", [])
+        combo_str = " ".join(default_combo) if isinstance(default_combo, list) else str(default_combo)
+        self._hotkey_btn.config(text=combo_str or "Click to set hotkey")
 
     def _close(self):
         try:
@@ -245,16 +259,138 @@ class SettingsWindow:
                 time.sleep(0.05)
         except Exception:
             pass
+        
+    def _start_hotkey_recording(self):
+        if self._recording_hotkey:
+            return
+        self._recording_hotkey = True
+        self._recorded_keys = []
+        self._currently_held = set()
+        if self._capture:
+            self._capture.set_recording(True)
+        self._hotkey_btn.config(text="Press keys… (Esc to cancel)")
+        self.root.bind("<KeyPress>", self._on_hotkey_keypress)
+        self.root.bind("<KeyRelease>", self._on_hotkey_keyrelease)
+        self.root.focus_set()
+
+    def _on_hotkey_keypress(self, event):
+        if not self._recording_hotkey:
+            return
+
+        # Esc cancels immediately
+        if event.keysym == "Escape":
+            self._stop_hotkey_recording(cancelled=True)
+            return
+
+        key = self._tkkey_to_pynput(event)
+        if key is None:
+            return
+
+        self._currently_held.add(key)
+
+        # Build ordered combo: modifiers first, then regular keys
+        modifier_keys = {"shift", "ctrl", "alt", "cmd", "caps_lock"}
+        modifiers = [k for k in self._recorded_keys if k in modifier_keys]
+        non_modifiers = [k for k in self._recorded_keys if k not in modifier_keys]
+
+        if key not in self._recorded_keys:
+            if key in modifier_keys:
+                modifiers.append(key)
+            else:
+                non_modifiers.append(key)
+
+        self._recorded_keys = modifiers + non_modifiers
+        self._hotkey_btn.config(text=" + ".join(self._recorded_keys) + "…")
+
+    def _on_hotkey_keyrelease(self, event):
+        if not self._recording_hotkey:
+            return
+
+        key = self._tkkey_to_pynput(event)
+        if key:
+            self._currently_held.discard(key)
+
+        # Only finalize when ALL keys have been released and we have a valid combo
+        modifier_keys = {"shift", "ctrl", "alt", "cmd", "caps_lock"}
+        has_non_modifier = any(k not in modifier_keys for k in self._recorded_keys)
+
+        if len(self._currently_held) == 0 and self._recorded_keys and has_non_modifier:
+            self._stop_hotkey_recording(cancelled=False)
+
+    def _stop_hotkey_recording(self, cancelled=False):
+        self._recording_hotkey = False
+        self.root.unbind("<KeyPress>")
+        self.root.unbind("<KeyRelease>")
+        if self._capture:
+            self._capture.set_recording(False)
+        if cancelled or not self._recorded_keys:
+            self._hotkey_btn.config(
+                text=self._vars["capture_combo"].get() or "Click to set hotkey"
+            )
+        else:
+            combo_str = " ".join(self._recorded_keys)
+            self._vars["capture_combo"].set(combo_str)
+            self._hotkey_btn.config(text=combo_str)
+        self._recorded_keys = []
+        self._currently_held = set()
+        
+    def _tkkey_to_pynput(self, event) -> str:
+            """Convert a Tkinter key event to a pynput-compatible string."""
+            special_map = {
+                "shift":        "shift",
+                "shift_l":      "shift",
+                "shift_r":      "shift",
+                "control":      "ctrl",
+                "control_l":    "ctrl",
+                "control_r":    "ctrl",
+                "alt":          "alt",
+                "alt_l":        "alt",
+                "alt_r":        "alt",
+                "super":        "cmd",
+                "super_l":      "cmd",
+                "super_r":      "cmd",
+                "caps_lock":    "caps_lock",
+                "tab":          "tab",
+                "return":       "enter",
+                "space":        "space",
+                "backspace":    "backspace",
+                "delete":       "delete",
+                "home":         "home",
+                "end":          "end",
+                "prior":        "page_up",
+                "next":         "page_down",
+                "up":           "up",
+                "down":         "down",
+                "left":         "left",
+                "right":        "right",
+                "f1":  "f1",  "f2":  "f2",  "f3":  "f3",  "f4":  "f4",
+                "f5":  "f5",  "f6":  "f6",  "f7":  "f7",  "f8":  "f8",
+                "f9":  "f9",  "f10": "f10", "f11": "f11", "f12": "f12",
+            }
+            sym = event.keysym.lower()
+            if sym in special_map:
+                return special_map[sym]
+
+            # Use keysym directly for single letter/digit keys — this works even
+            # when Ctrl is held and event.char becomes a control character like \x03
+            if len(sym) == 1 and sym.isalnum():
+                return sym
+
+            # Fallback: printable char from event.char
+            if event.char and len(event.char) == 1 and event.char.isprintable():
+                return event.char.lower()
+
+            return None
 
 
-def show_settings_window(settings, main_thread_queue=None):
+def show_settings_window(settings, main_thread_queue=None, capture=None):
     """Open settings window. If main_thread_queue provided, queue to main thread (safer for Tkinter)."""
     logging.info("[Settings] show_settings_window() called")
     
     def _create_window():
         try:
             logging.info("[Settings] Creating window on main thread")
-            SettingsWindow.show_window(settings)
+            SettingsWindow.show_window(settings, capture=capture)
             logging.info("[Settings] Window creation completed")
         except Exception as e:
             logging.error(f"[Settings] Failed to create window: {e}", exc_info=True)

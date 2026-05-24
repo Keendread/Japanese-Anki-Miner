@@ -57,13 +57,24 @@ class BBoxOverlay:
         self.canvas.bind("<B1-Motion>", self._on_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_release)
         self.root.bind("<Escape>", self._on_cancel)
+        self.canvas.bind("<Escape>", self._on_cancel)
  
         self.root.update()
         self.root.lift()
         self.root.focus_force()
         self.canvas.focus_set()
+        
+        self.root.after(50, self._force_focus)
  
         print("[BBox] Overlay ready, waiting for drag.")
+        
+    def _force_focus(self):
+        try:
+            self.root.lift()
+            self.root.focus_force()
+            self.canvas.focus_set()
+        except Exception:
+            pass
  
     def show(self):
         while self.running:

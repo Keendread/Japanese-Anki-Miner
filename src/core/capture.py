@@ -254,6 +254,7 @@ class CaptureController:
         self.combo_active      = False
         self._bbox_open        = False
         self._last_trigger_time = 0  # Throttle rapid hotkey presses
+        self._recording        = False
  
         self.listener = keyboard.Listener(
             on_press=self._on_press,
@@ -261,13 +262,29 @@ class CaptureController:
         )
         
     def _normalize(self, key: Any) -> Any:
+        # Collapse left/right variants
+        _variant_map = {
+            keyboard.Key.ctrl_r:  keyboard.Key.ctrl_l,
+            keyboard.Key.shift_r: keyboard.Key.shift_l,
+            keyboard.Key.alt_r:   keyboard.Key.alt_l,
+            keyboard.Key.alt_gr:  keyboard.Key.alt_l,
+        }
         if isinstance(key, keyboard.KeyCode):
-            return key.char.lower() if key.char else key
-        return key
+            char = key.char
+            if char is not None:
+                # Ctrl held maps 'a'-'z' to '\x01'-'\x1a' — convert back to letter
+                if len(char) == 1 and ord(char) < 32:
+                    char = chr(ord(char) + 96)  # '\x01' -> 'a', '\x02' -> 'b', etc.
+                return char.lower()
+            return key
+        return _variant_map.get(key, key)
         
     def _on_press(self, key: Any) -> None:
         norm_key = self._normalize(key)
         self.pressed_keys.add(norm_key)
+        print(f"[Debug] pressed={norm_key!r}, combo={self.combo!r}, held={self.pressed_keys!r}, matches={self._matches_combo()}")
+        if self._recording:
+            return
         if self._matches_combo():
             if not self.combo_active:
                 import time
@@ -287,7 +304,11 @@ class CaptureController:
             self.combo_active = False
                 
     def _matches_combo(self) -> bool:
-        return all(k in self.pressed_keys for k in self.combo)
+        return self.combo == self.pressed_keys
+    
+    def set_recording(self, recording: bool) -> None:
+        """Call with True while settings hotkey recorder is active."""
+        self._recording = recording
             
     def set_combo(self, new_combo: set) -> None:
         self.combo = new_combo
