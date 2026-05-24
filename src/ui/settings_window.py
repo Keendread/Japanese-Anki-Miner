@@ -52,7 +52,7 @@ class SettingsWindow:
         logging.debug(f"[Settings] Creating Toplevel window from root: {_TK_ROOT}")
         self.root = tk.Toplevel(_TK_ROOT)
         self.root.title("JAM Settings")
-        self.root.resizable(False, False)
+        self.root.resizable(True, True)
         self.root.geometry("520x420")
         self.root.attributes("-topmost", True)
         self.root.protocol("WM_DELETE_WINDOW", self._close)
@@ -520,12 +520,12 @@ def pump_pending_window_once():
             event_type, event_data = win._event_queue.get_nowait()
             if event_type == "save_success":
                 logging.info("[Settings] Save success event received")
-                messagebox.showinfo("JAM Settings", "Settings saved successfully.")
+                messagebox.showinfo("JAM Settings", "Settings saved successfully.", parent=win.root)
                 win._close()
                 return
             elif event_type == "save_error":
                 logging.error(f"[Settings] Save error event received: {event_data}")
-                messagebox.showerror("Error saving settings", event_data)
+                messagebox.showerror("Error saving settings", event_data, parent=win.root)
         except queue.Empty:
             pass
     except tk.TclError:
