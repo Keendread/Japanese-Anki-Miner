@@ -120,8 +120,14 @@ class Card:
             parts.append(glossary_html)
         
         # Example sentence if available
-        if word.full_sentence:
-            sentence_cloze = Card._build_sentence_cloze(word.full_sentence, word.surface)
+        display_sentence = None
+        if word.example_sentences:
+            display_sentence = word.example_sentences[0].get("japanese", "")
+        elif word.full_sentence:
+            display_sentence = word.full_sentence
+
+        if display_sentence:
+            sentence_cloze = Card._build_sentence_cloze(display_sentence, word.surface)
             parts.append(f"<i>{sentence_cloze}</i>")
         
         # Metadata (small text)
@@ -217,29 +223,27 @@ class Card:
                 "Front": self.front,
                 "Back": self.back,
             }
-        
-        # For Lapis or custom types - extended fields
+
         word = self.source_word
         freq_display = str(self.frequency_rank) if self.frequency_rank else ""
-        
+
+        # Prefer a curated Tatoeba example over raw OCR text
+        if word.example_sentences:
+            ex = word.example_sentences[0]
+            display_sentence = ex.get("japanese", "") or word.full_sentence or ""
+        else:
+            display_sentence = word.full_sentence or ""
+
+        sentence_cloze = Card._build_sentence_cloze(display_sentence, word.surface) if display_sentence else ""
+
         return {
             "Expression": word.surface,
             "ExpressionFurigana": self._build_front_generic(word),
             "ExpressionReading": word.reading,
             "MainDefinition": word.meaning or "",
             "Glossary": self.glossary_html or "",
-            "Sentence": self.sentence_cloze or (word.full_sentence or ""),
+            "Sentence": sentence_cloze,
             "SentenceFurigana": word.sentence_furigana or "",
-            "PitchPosition": self.pitch_pattern or "",
-            "PitchCategories": word.pitch_category or "",
-            "Frequency": freq_display,
-            "FreqSort": freq_display,
-            "MiscInfo": "JAM",
-            "ExpressionAudio": "",
-            "SentenceAudio": "",
-            "Picture": "",
-            "DefinitionPicture": "",
-            "SelectionText": word.surface,
         }
     
     def to_json(self) -> Dict[str, Any]:

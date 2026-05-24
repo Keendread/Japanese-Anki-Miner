@@ -309,7 +309,12 @@ class CardToast:
         reading        = payload.reading
         pos            = payload.pos
         main_def       = payload.meaning
-        sentence       = payload.full_sentence
+        if payload.example_sentences:
+            sentence = payload.example_sentences[0].get("japanese", "")
+            sentence_en = payload.example_sentences[0].get("english", "")
+        else:
+            sentence = payload.full_sentence
+            sentence_en = None
         pitch_pattern  = payload.pitch_pattern
         pitch_category = payload.pitch_category
         frequency_rank = payload.frequency_rank
@@ -391,28 +396,13 @@ class CardToast:
                 justify=tk.LEFT,
                 padx=p, pady=rescale(2),
             ).pack(fill=tk.X)
-
-        if examples:
-            ex = examples[0]
-            tk.Frame(outer, bg="#333333", height=1).pack(
-                fill=tk.X, padx=p, pady=(rescale(6), 0)
-            )
-            tk.Label(
-                outer,
-                text=ex.get("japanese", ""),
-                font=("Segoe UI", 9),
-                bg="#1e1e1e", fg="#cccccc",
-                anchor="w",
-                wraplength=self.WINDOW_WIDTH - p * 2,
-                justify=tk.LEFT,
-                padx=p, pady=rescale(2),
-            ).pack(fill=tk.X)
-            if ex.get("english"):
+            # Show English gloss if it came from a dictionary example
+            if sentence_en:
                 tk.Label(
                     outer,
-                    text=ex["english"],
+                    text=sentence_en,
                     font=("Segoe UI", 8),
-                    bg="#1e1e1e", fg="#777777",
+                    bg="#1e1e1e", fg="#666666",
                     anchor="w",
                     wraplength=self.WINDOW_WIDTH - p * 2,
                     justify=tk.LEFT,
