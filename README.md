@@ -1,9 +1,13 @@
 # Japanese-Anki-Miner
 
-## How to build
-run build.py
-
 ## How to run
-JAM.exe gets built in dist\ folder where build.py was ran. <br>
-Running JAM.exe for the first time will initiate database building which will take time. <br>
+Run main.py
 JAM reside inside the system tray.
+
+## TODO
+- Replace pynput with win32api GetAsyncKeyState
+- Apply changes to input handling for SettingsManager
+- Switch from tkinter to PySide6
+- Switch SudachiPy mode to C
+- Add Proper Name Morphological Analyzer (namedivider, japanese-personal-name-dataset)
+  
