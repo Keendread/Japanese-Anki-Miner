@@ -18,6 +18,8 @@ class Word:
 
     # Metadata
     full_sentence: Optional[str] = None
+    sentence_translation: Optional[str] = None  
+    sentence_audio: Optional[str] = None        
     capture_path: Optional[str] = None
 
     # Additional dictionary data
@@ -59,12 +61,6 @@ class Word:
         self.jitendex_version = lookup_result.get("jitendex_version")
         
     def best_sentence(self) -> str:
-        """
-        Returns the best available sentence for display and audio.
-        Prefers OCR context, but only when it's actually a sentence
-        (i.e. contains more than just the word itself).
-        Falls back to Tatoeba, then Jitendex inline example.
-        """
         ocr = self.full_sentence or ""
         if len(ocr.strip()) > 10:
             return ocr
@@ -77,3 +73,17 @@ class Word:
             if jitendex:
                 return jitendex
         return ocr  # last resort: bare word, better than empty
+
+    def best_translation(self) -> str:
+        ocr = self.full_sentence or ""
+        if len(ocr.strip()) > 10:
+            return self.sentence_translation or ""
+        if self.example_sentences:
+            tatoeba_en = self.example_sentences[0].get("english", "")
+            if tatoeba_en:
+                return tatoeba_en
+        if self.glossary:
+            jitendex_en = self.glossary[0].get("example_en") or ""
+            if jitendex_en:
+                return jitendex_en
+        return ""

@@ -15,15 +15,14 @@ Pillow                   # Image processing, cropping, format conversion
 opencv-python           # Text region detection for multi-word capture mode (bbox & screen)
  
 # ---------- GLOBAL HOTKEYS & CURSOR ----------
-pynput                   # Global hotkey listener (works outside focused window)
 pyautogui                # Mouse cursor position fallback
 pywin32                  # Windows API — precise cursor position, window info
  
 # ---------- OCR ----------
-manga-ocr                # Japanese OCR via Vision Transformer (pulls torch + transformers)
-torchvision
+chrome-lens-py
 
 # ---------- JAPANESE NLP ----------
+joyokanji
 sudachipy                # Japanese morphological analyzer
 sudachidict_full         # Full SudachiPy dictionary (covers compounds + proper nouns)
                          # Install separately: pip install sudachidict-full
@@ -39,15 +38,17 @@ requests                 # HTTP calls to VOICEVOX API and Yomichan audio server
 pydub                    # Audio file conversion (wav → mp3 if needed)
 aiohttp                  # Async HTTP client for concurrent audio requests to VOICEVOX
 aiofiles                 # Async file I/O for saving audio files without blocking main thread
- 
+PyAudioWPatch            # Audio recording
+
 # ---------- IMAGE SOURCING ----------
 requests                 # Already listed above — used for Irasutoya, Wikimedia, Pexels
 beautifulsoup4           # HTML parsing fallback for Irasutoya feed
 bing-image-downloader    # Bing image search API (fallback to Irasutoya)
 
-# ---------- SYSTEM TRAY UI ----------
+# ---------- SYSTEM TRAY/UI ----------
 pystray                  # System tray icon and right-click menu
 Pillow                   # Already listed — also used for tray icon rendering
+PySide6
  
 # ---------- PACKAGING ----------
 pyinstaller              # Packages the app into a single .exe for distribution

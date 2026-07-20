@@ -1,11 +1,3 @@
-# One-time script to download and compile all dictionary sources into jmdict.db
-# Run automatically by main.py if DB is missing or outdated
-# Sources:
-#   Jitendex (Yomitan zip)  - jitendex.org  (replaces raw JMDict XML)
-#   Kanjium pitch           - github.com/mifunetoshiro/kanjium
-#   Wikipedia frequency     - github.com/mifunetoshiro/kanjium
-#   Tatoeba                 - downloads.tatoeba.org
-
 import os
 import sys
 import sqlite3
@@ -16,15 +8,9 @@ import zipfile
 import re
 import time
 import threading
-import tkinter as tk
-from tkinter import ttk
 
 
 def _get_runtime_dirs():
-    """
-    Returns (base_dir, raw_dir, db_path) rooted at the correct location
-    whether running from source or as a frozen exe.
-    """
     if getattr(sys, 'frozen', False):
         app_dir = os.path.dirname(sys.executable)
     else:
@@ -79,84 +65,6 @@ SOURCES = {
         "label": "Tatoeba English sentences",
     },
 }
-
-
-# ── Progress window ───────────────────────────────────────────────────────────
-
-class ProgressWindow:
-    def __init__(self):
-        self.root = tk.Tk()
-        self.root.title("JAM — Building Dictionary Database")
-        self.root.resizable(False, False)
-        self.root.attributes("-topmost", True)
-
-        w, h = 500, 140
-        sw = self.root.winfo_screenwidth()
-        sh = self.root.winfo_screenheight()
-        self.root.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
-
-        outer = tk.Frame(self.root, padx=20, pady=16)
-        outer.pack(fill=tk.BOTH, expand=True)
-
-        tk.Label(
-            outer,
-            text="Building dictionary database (first run only)",
-            font=("Segoe UI", 10, "bold"),
-            anchor="w",
-        ).pack(fill=tk.X)
-
-        self.step_label = tk.Label(
-            outer, text="Starting...", font=("Segoe UI", 9),
-            fg="#555555", anchor="w",
-        )
-        self.step_label.pack(fill=tk.X, pady=(4, 8))
-
-        bar_row = tk.Frame(outer)
-        bar_row.pack(fill=tk.X)
-        bar_row.columnconfigure(0, weight=1)
-        bar_row.columnconfigure(1, minsize=40)
-
-        self.progress = ttk.Progressbar(bar_row, orient="horizontal", mode="determinate")
-        self.progress.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-
-        self.pct_label = tk.Label(
-            bar_row, text="0%", font=("Segoe UI", 9), anchor="e", width=4
-        )
-        self.pct_label.grid(row=0, column=1, sticky="e")
-
-        self._pending_step = None
-        self._pending_pct  = None
-        self._close_flag   = False
-
-        self.root.protocol("WM_DELETE_WINDOW", lambda: None)
-        self.root.update()
-
-    def set_step(self, text: str, pct: float):
-        self._pending_step = text
-        self._pending_pct  = pct
-
-    def pump(self) -> bool:
-        if self._pending_step is not None:
-            self.step_label.config(text=self._pending_step)
-            self._pending_step = None
-        if self._pending_pct is not None:
-            self.progress["value"] = self._pending_pct
-            self.pct_label.config(text=f"{int(self._pending_pct)}%")
-            self._pending_pct = None
-        if self._close_flag:
-            try:
-                self.root.destroy()
-            except Exception:
-                pass
-            return False
-        try:
-            self.root.update()
-        except tk.TclError:
-            return False
-        return True
-
-    def close(self):
-        self._close_flag = True
 
 
 # ── Download helpers ──────────────────────────────────────────────────────────
@@ -358,10 +266,6 @@ def _parse_sense_group(sg: dict) -> list:
 
 
 def _find_example(node) -> tuple:
-    """
-    Recursively finds the first example-sentence node.
-    Returns (japanese_str, english_str) or (None, None).
-    """
     if isinstance(node, list):
         for child in node:
             jp, en = _find_example(child)
@@ -800,7 +704,7 @@ def _link_tatoeba_to_entries(conn: sqlite3.Connection):
 
 # ── Main build pipeline ───────────────────────────────────────────────────────
 
-def build(progress_window: ProgressWindow = None):
+def build(progress_window=None):
     def step(label: str, pct: float):
         print(f"[Build] {label} ({int(pct)}%)")
         if progress_window:
@@ -900,19 +804,8 @@ def build(progress_window: ProgressWindow = None):
 # ── Entry points ──────────────────────────────────────────────────────────────
 
 def run_with_progress():
-    win = ProgressWindow()
-    build_thread = threading.Thread(target=build, args=(win,), daemon=True)
-    build_thread.start()
-
-    while True:
-        still_running = win.pump()
-        if not still_running:
-            break
-        if not build_thread.is_alive():
-            win.close()
-        time.sleep(0.05)
-
-    build_thread.join()
+    from ui.build_progress import run_with_progress_ui
+    run_with_progress_ui(build)
 
 
 def needs_build() -> bool:

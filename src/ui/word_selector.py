@@ -1,45 +1,30 @@
-# src/ui/word_selector.py
-#
-# DPI-aware tkinter window for selecting multiple words to mine at once.
-# Uses the same blocking show() pattern as CardToast in notifier.py —
-# the main thread stays inside show() while the window is open, processing
-# events via root.update() in a loop. No pump() or global state needed.
-
 from __future__ import annotations
 
-import ctypes
-import tkinter as tk
+import threading
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
+from PySide6.QtWidgets import (
+    QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QFrame,
+    QScrollArea, QApplication,
+)
+from PySide6.QtCore import Qt, QTimer
+
 from src.models.word import Word
-
-# ─── DPI Awareness ────────────────────────────────────────────────────────────
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(1)
-except Exception:
-    try:
-        ctypes.windll.user32.SetProcessDPIAware()
-    except Exception:
-        pass
+from core.signals import signals
 
 
-def rescale(x: int) -> int:
-    try:
-        dpi = ctypes.windll.user32.GetDpiForSystem()
-        return int(x * (dpi / 96.0))
-    except Exception:
-        return x
-
-
-# ─── Entry Data Class ─────────────────────────────────────────────────────────
+# ─── Entry Data Class (unchanged — no UI dependency) ───────────────────────────
 
 @dataclass
 class WordEntry:
-    """One row in the word selector. Wraps a Word with UI-level state."""
     word:     Word
-    is_mined: bool = False   # grayed out, checkbox disabled
-    selected: bool = True    # pre-checked for unmined words
+    is_mined: bool = False
+    selected: bool = True
+
+    block_index:       int = 0
+    block_text:        str = ""
+    block_translation: str = ""
 
     @property
     def display_surface(self) -> str:
@@ -60,342 +45,496 @@ class WordEntry:
 
 # ─── Layout constants ─────────────────────────────────────────────────────────
 
-_WIN_W    = rescale(580)
-_ROW_H    = rescale(48)
-_MAX_ROWS = 8      # visible rows before scrollbar appears
-_P        = rescale(12)
+_WIN_W    = 600
+_ROW_H    = 44
+_MAX_ROWS = 10
+_P        = 12
+
+_BG_SEL,   _FG_SEL,   _SFG_SEL   = "#1a3a1a", "#6bff6b", "#4aaa4a"
+_BG_UNSEL, _FG_UNSEL, _SFG_UNSEL = "#3a1a1a", "#ff6b6b", "#aa4a4a"
+_BG_MINED, _FG_MINED, _SFG_MINED = "#1e2a1e", "#4a8a4a", "#3a6a3a"
 
 
-# ─── Word Selector UI ─────────────────────────────────────────────────────────
+# ─── Row widget ─────────────────────────────────────────────────────────────
 
-class WordSelectorUI:
-    """
-    Scrollable word list with checkboxes.
+class _WordRow(QFrame):
+    def __init__(self, entry: WordEntry, on_toggle: Callable[[], None]) -> None:
+        super().__init__()
+        self.entry      = entry
+        self._on_toggle = on_toggle
+        self.setFixedHeight(_ROW_H)
+        self.setCursor(Qt.ArrowCursor if entry.is_mined else Qt.PointingHandCursor)
 
-    Lifecycle (same as CardToast):
-        ui = WordSelectorUI(entries, on_confirm)
-        ui.show()          # blocks main thread until user confirms / closes
-        # on_confirm(selected_entries) is called before show() returns
-    """
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 0, 8, 0)
 
-    def __init__(
-        self,
-        entries:    List[WordEntry],
-        on_confirm: Callable[[List[WordEntry]], None],
-    ):
-        self.entries    = entries
-        self.on_confirm = on_confirm
-        self.running    = True
-        self._vars: List[tk.BooleanVar] = []
-        self._mine_btn: Optional[tk.Button] = None
+        self._tick = QLabel()
+        self._tick.setFixedWidth(24)
+        self._tick.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self._tick)
 
-        # Fresh Tk() — same pattern as CardToast in notifier.py
-        self.root = tk.Tk()
-        self.root.title("JAM — Select Words to Mine")
-        self.root.resizable(False, True)
-        self.root.attributes("-topmost", True)
-        self.root.configure(bg="#1e1e1e")
-        self.root.protocol("WM_DELETE_WINDOW", self._on_window_close)
+        self._surface = QLabel(entry.display_surface)
+        self._surface.setFixedWidth(60)
+        layout.addWidget(self._surface)
+
+        self._reading = QLabel(entry.display_reading)
+        self._reading.setFixedWidth(90)
+        layout.addWidget(self._reading)
+
+        if entry.display_pos:
+            self._pos = QLabel(entry.display_pos[:6])
+            self._pos.setStyleSheet("font-size: 9px; color: #aaaaaa; padding: 1px 4px;")
+            layout.addWidget(self._pos)
+        else:
+            self._pos = None
+
+        self._meaning = QLabel(entry.display_meaning)
+        self._meaning.setWordWrap(True)
+        layout.addWidget(self._meaning, stretch=1)
+
+        if entry.is_mined:
+            mined_lbl = QLabel("✓ mined")
+            mined_lbl.setStyleSheet(
+                "font-size: 9px; font-weight: bold; background-color: #1a2a1a; "
+                "color: #4a8a4a; padding: 2px 5px;"
+            )
+            layout.addWidget(mined_lbl)
+
+        self._refresh()
+
+    def _refresh(self) -> None:
+        if self.entry.is_mined:
+            bg, fg, sfg, tick = _BG_MINED, _FG_MINED, _SFG_MINED, "✓"
+        elif self.entry.selected:
+            bg, fg, sfg, tick = _BG_SEL, _FG_SEL, _SFG_SEL, "☑"
+        else:
+            bg, fg, sfg, tick = _BG_UNSEL, _FG_UNSEL, _SFG_UNSEL, "☐"
+
+        self.setStyleSheet(f"_WordRow {{ background-color: {bg}; }}")
+        self._tick.setStyleSheet(f"color: {fg}; background: transparent; font-size: 13px;")
+        self._tick.setText(tick)
+        self._surface.setStyleSheet(f"color: {fg}; background: transparent; font-size: 13px;")
+        self._reading.setStyleSheet(f"color: {sfg}; background: transparent; font-size: 11px;")
+        self._meaning.setStyleSheet(f"color: {sfg}; background: transparent; font-size: 10px;")
+
+    def mousePressEvent(self, event) -> None:
+        if not self.entry.is_mined and event.button() == Qt.LeftButton:
+            self.entry.selected = not self.entry.selected
+            self._refresh()
+            self._on_toggle()
+        super().mousePressEvent(event)
+
+
+# ─── Group header (per-block, with audio source toggle) ───────────────────────
+
+class _GroupHeader(QFrame):
+    def __init__(self, entries: List[WordEntry], on_recording_state_change,
+                 on_activated) -> None:
+        super().__init__()
+        self.entries = entries               # all entries sharing this block_index
+        self._on_recording_state_change = on_recording_state_change
+        self._on_activated = on_activated
+        self._active = False
+        first = entries[0]
+
+        self.setCursor(Qt.PointingHandCursor)
+        self._apply_container_style()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(_P, 8, _P, 6)
+        layout.setSpacing(2)
+
+        text_row = QHBoxLayout()
+        block_lbl = QLabel(first.block_text or "(no text)")
+        block_lbl.setWordWrap(True)
+        block_lbl.setStyleSheet("font-size: 12px; color: #dddddd; font-style: italic;")
+        text_row.addWidget(block_lbl, stretch=1)
+        layout.addLayout(text_row)
+
+        if first.block_translation:
+            trans_lbl = QLabel(first.block_translation)
+            trans_lbl.setWordWrap(True)
+            trans_lbl.setStyleSheet("font-size: 10px; color: #888888;")
+            layout.addWidget(trans_lbl)
+
+        control_row = QHBoxLayout()
+
+        self._record_btn = QPushButton("● Record Sentence Audio")
+        self._record_btn.setCursor(Qt.PointingHandCursor)
+        self._apply_idle_style()
+        self._record_btn.clicked.connect(self._toggle_recording)
+        control_row.addWidget(self._record_btn)
+
+        self._source_lbl = QLabel("Source: VOICEVOX (default)")
+        self._source_lbl.setStyleSheet("font-size: 9px; color: #7799ff;")
+        control_row.addWidget(self._source_lbl, stretch=1)
+
+        self._hotkey_hint = QLabel("")
+        self._hotkey_hint.setStyleSheet("font-size: 9px; color: #666666;")
+        control_row.addWidget(self._hotkey_hint)
+
+        layout.addLayout(control_row)
+
+    def set_hotkey_hint(self, text: str) -> None:
+        self._hotkey_hint.setText(text)
+
+    def _apply_idle_style(self) -> None:
+        self._record_btn.setText("● Record Sentence Audio")
+        self._record_btn.setEnabled(True)
+        self._record_btn.setStyleSheet("""
+            QPushButton { background-color: #3a1a1a; color: #ff8888; border: none;
+                          padding: 4px 10px; font-size: 9px; font-weight: bold; }
+            QPushButton:hover { background-color: #4a2424; }
+        """)
+
+    def _apply_recording_style(self) -> None:
+        self._record_btn.setText("⏹ Stop Recording")
+        self._record_btn.setStyleSheet("""
+            QPushButton { background-color: #4a1a1a; color: #ffaaaa; border: none;
+                          padding: 4px 10px; font-size: 9px; font-weight: bold; }
+            QPushButton:hover { background-color: #5a2424; }
+        """)
+
+    def _apply_container_style(self) -> None:
+        if self._active:
+            self.setStyleSheet(
+                "background-color: #202030; border-left: 3px solid #7799ff;"
+            )
+        else:
+            self.setStyleSheet(
+                "background-color: #202030; border-left: 3px solid transparent;"
+            )
+
+    def set_active(self, active: bool) -> None:
+        self._active = active
+        self._apply_container_style()
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self._on_activated(self)
+        super().mousePressEvent(event)
+
+    def set_disabled_while_other_group_records(self, disabled: bool) -> None:
+        """Called on every OTHER group's header while one group is actively recording."""
+        self._record_btn.setEnabled(not disabled)
+
+    def toggle_recording(self) -> None:
+        self._toggle_recording()
+
+    def _toggle_recording(self) -> None:
+        from core import audio_recorder
+
+        if not audio_recorder.is_recording():
+            ok, error_msg = audio_recorder.start_recording()
+            if not ok:
+                self._source_lbl.setText(f"⚠ {error_msg or 'Could not start recording'}")
+                self._source_lbl.setStyleSheet("font-size: 9px; color: #ff8888;")
+                return
+            self._apply_recording_style()
+            self._source_lbl.setText("● Recording… replay the line now")
+            self._on_recording_state_change(self, recording=True)
+        else:
+            temp_path = audio_recorder.stop_recording()
+            self._apply_idle_style()
+
+            if temp_path is None:
+                self._source_lbl.setText("⚠ No audio captured — still using VOICEVOX")
+                self._on_recording_state_change(self, recording=False)
+                return
+
+            committed_filename = audio_recorder.commit_shared_recording(temp_path)
+
+            if committed_filename is None:
+                self._source_lbl.setText("⚠ Failed to save recording — still using VOICEVOX")
+                self._source_lbl.setStyleSheet("font-size: 9px; color: #ff8888;")
+                self._on_recording_state_change(self, recording=False)
+                return
+
+            for entry in self.entries:
+                entry.word.sentence_audio = committed_filename
+
+            self._source_lbl.setText("✓ Source: Recorded")
+            self._source_lbl.setStyleSheet("font-size: 9px; color: #6bff6b;")
+            self._on_recording_state_change(self, recording=False)
+
+
+# ─── Word Selector Window ─────────────────────────────────────────────────────
+
+class WordSelectorWindow(QWidget):
+    def __init__(self, entries: List[WordEntry],
+                 on_confirm: Callable[[List[WordEntry]], None],
+                 settings=None) -> None:
+        super().__init__()
+        self.entries      = entries
+        self._on_confirm  = on_confirm
+        self.settings     = settings
+        self._rows: List[_WordRow] = []
+        self._headers: List[_GroupHeader] = []
+        self._recording_header: Optional[_GroupHeader] = None
+        self._active_header: Optional[_GroupHeader] = None
+
+        self.setWindowTitle("JAM — Select Words to Mine")
+        self.setWindowFlags(Qt.WindowStaysOnTopHint)
+        self.setStyleSheet("background-color: #1e1e1e;")
 
         self._build_ui()
         self._position_window()
+        self._setup_record_hotkey()
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
-        self.root.update()
-        self.root.lift()
-        self.root.focus_force()
+    # ── Global record hotkey ─────────────────────────────────────────────────
+    def _setup_record_hotkey(self) -> None:
+        self._record_combo_vks: set = set()
+        self._hotkey_was_down = False
 
-    # ── Event loop (blocking, same pattern as CardToast.show()) ──────────────
-
-    def show(self):
-        """
-        Blocks the calling thread (main thread) until the user confirms or
-        closes. Calls on_confirm before returning so the caller can act on
-        the selection synchronously.
-        """
-        while self.running:
+        if self.settings is not None:
             try:
-                self.root.update()
-            except tk.TclError:
-                break
+                self._record_combo_vks = self.settings.get_record_combo_vks()
+            except Exception as e:
+                print(f"[Selector] Couldn't read record_combo: {e}")
+
+        combo_names = self.settings.get("record_combo", []) if self.settings else []
+        hint = f"⌨ {' + '.join(combo_names)}" if combo_names else ""
+        for header in self._headers:
+            header.set_hotkey_hint(hint)
+
+        if not self._record_combo_vks:
+            return   # no combo configured — button-only, no polling needed
+
+        self._hotkey_timer = QTimer(self)
+        self._hotkey_timer.setInterval(20)   # matches CaptureController's poll rate
+        self._hotkey_timer.timeout.connect(self._poll_record_hotkey)
+        self._hotkey_timer.start()
+
+    def _poll_record_hotkey(self) -> None:
+        from core.input import is_held
+
+        all_held = all(is_held(vk) for vk in self._record_combo_vks)
+
+        if all_held and not self._hotkey_was_down:
+            self._hotkey_was_down = True
+            self._trigger_record_hotkey()
+        elif not all_held:
+            self._hotkey_was_down = False
+
+    def _trigger_record_hotkey(self) -> None:
+        if self._recording_header is not None:
+            self._recording_header.toggle_recording()
+        elif self._active_header is not None:
+            self._active_header.toggle_recording()
+
+    # ── Group targeting ──────────────────────────────────────────────────────
+
+    def _on_group_activated(self, header: "_GroupHeader") -> None:
+        if header is self._active_header:
+            return
+        if self._active_header is not None:
+            self._active_header.set_active(False)
+        self._active_header = header
+        header.set_active(True)
+
+    # ── Grouping ──────────────────────────────────────────────────────────────
+
+    def _grouped_entries(self) -> List[List[WordEntry]]:
+        groups: dict[int, List[WordEntry]] = {}
+        order: List[int] = []
+        for entry in self.entries:
+            if entry.block_index not in groups:
+                groups[entry.block_index] = []
+                order.append(entry.block_index)
+            groups[entry.block_index].append(entry)
+        return [groups[i] for i in order]
+
+    def _on_recording_state_change(self, active_header: _GroupHeader, recording: bool) -> None:
+        self._recording_header = active_header if recording else None
+        for header in self._headers:
+            if header is not active_header:
+                header.set_disabled_while_other_group_records(recording)
 
     # ── Layout ────────────────────────────────────────────────────────────────
 
-    def _position_window(self):
-        visible = min(len(self.entries), _MAX_ROWS)
-        win_h   = rescale(40) + visible * _ROW_H + rescale(8) + rescale(52)
-        sw = self.root.winfo_screenwidth()
-        sh = self.root.winfo_screenheight()
-        self.root.geometry(f"{_WIN_W}x{win_h}+{(sw-_WIN_W)//2}+{(sh-win_h)//2}")
+    def _position_window(self) -> None:
+        visible_rows = min(len(self.entries), _MAX_ROWS)
+        group_count  = len(self._grouped_entries())
+        win_h = 40 + group_count * 54 + visible_rows * _ROW_H + 8 + 52
+        win_h = min(win_h, 700)
+        screen = QApplication.primaryScreen().availableGeometry()
+        self.setFixedSize(_WIN_W, win_h)
+        self.move(
+            screen.x() + (screen.width()  - _WIN_W) // 2,
+            screen.y() + (screen.height() - win_h)  // 2,
+        )
 
-    def _build_ui(self):
+    def _build_ui(self) -> None:
         new_count   = sum(1 for e in self.entries if not e.is_mined)
         total_count = len(self.entries)
 
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
         # ── Title bar ──
-        title_bar = tk.Frame(self.root, bg="#2a2a2a", pady=rescale(8))
-        title_bar.pack(fill=tk.X)
+        title_bar = QFrame()
+        title_bar.setStyleSheet("background-color: #2a2a2a;")
+        tb_layout = QHBoxLayout(title_bar)
+        tb_layout.setContentsMargins(_P, 8, _P, 8)
 
-        tk.Label(
-            title_bar,
-            text="Select words to mine",
-            font=("Segoe UI", 10, "bold"),
-            bg="#2a2a2a", fg="#ffffff", padx=_P,
-        ).pack(side=tk.LEFT)
+        title = QLabel("Select words to mine")
+        title.setStyleSheet("font-weight: bold; font-size: 12px; color: #ffffff;")
+        tb_layout.addWidget(title, stretch=1)
 
-        tk.Label(
-            title_bar,
-            text=f"{total_count} found  ·  {new_count} new",
-            font=("Segoe UI", 8),
-            bg="#2a2a2a", fg="#888888", padx=_P,
-        ).pack(side=tk.RIGHT)
+        count_lbl = QLabel(f"{total_count} found  ·  {new_count} new")
+        count_lbl.setStyleSheet("font-size: 9px; color: #888888;")
+        tb_layout.addWidget(count_lbl)
 
-        # ── Scrollable list ──
-        list_frame = tk.Frame(self.root, bg="#1e1e1e")
-        list_frame.pack(fill=tk.BOTH, expand=True)
+        layout.addWidget(title_bar)
 
-        canvas = tk.Canvas(
-            list_frame,
-            bg="#1e1e1e",
-            highlightthickness=0,
-            height=_ROW_H * min(len(self.entries), _MAX_ROWS),
-        )
-        scrollbar = tk.Scrollbar(list_frame, orient=tk.VERTICAL, command=canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
+        # ── Scrollable, grouped list ──
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("border: none; background-color: #1e1e1e;")
 
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        inner = QWidget()
+        inner.setStyleSheet("background-color: #1e1e1e;")
+        inner_layout = QVBoxLayout(inner)
+        inner_layout.setContentsMargins(0, 0, 0, 0)
+        inner_layout.setSpacing(0)
 
-        inner = tk.Frame(canvas, bg="#1e1e1e")
+        for group in self._grouped_entries():
+            header = _GroupHeader(
+                group,
+                on_recording_state_change=self._on_recording_state_change,
+                on_activated=self._on_group_activated,
+            )
+            self._headers.append(header)
+            inner_layout.addWidget(header)
 
-        # Save the canvas window ID so we can resize inner to match canvas.
-        # Without this, inner has no width and fill=tk.X on each row renders 0px wide.
-        canvas_win = canvas.create_window((0, 0), window=inner, anchor="nw")
+            for entry in group:
+                row = _WordRow(entry, on_toggle=self._update_mine_button)
+                inner_layout.addWidget(row)
+                self._rows.append(row)
 
-        # When the canvas is resized (e.g. window resize), keep inner width in sync.
-        # This is what makes fill=tk.X on rows actually fill the visible area.
-        def _on_canvas_resize(event):
-            canvas.itemconfig(canvas_win, width=event.width)
+            group_divider = QFrame()
+            group_divider.setFixedHeight(1)
+            group_divider.setStyleSheet("background-color: #333333;")
+            inner_layout.addWidget(group_divider)
 
-        canvas.bind("<Configure>", _on_canvas_resize)
+        if self._headers:
+            self._on_group_activated(self._headers[0])
 
-        # Update scroll region whenever inner's content changes
-        def _on_inner_resize(event):
-            canvas.configure(scrollregion=canvas.bbox("all"))
+        inner_layout.addStretch(1)
+        scroll.setWidget(inner)
+        layout.addWidget(scroll, stretch=1)
 
-        inner.bind("<Configure>", _on_inner_resize)
-
-        # Bind mousewheel to the root window so it works regardless of
-        # which widget the mouse is hovering over.
-        def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-        self.root.bind("<MouseWheel>", _on_mousewheel)
-
-        # Build rows
-        for i, entry in enumerate(self.entries):
-            var = tk.BooleanVar(value=entry.selected and not entry.is_mined)
-            var.trace_add("write", self._update_mine_button)
-            self._vars.append(var)
-            self._build_row(inner, entry, var, i)
-
-        # Force scroll region calculation after all rows are packed
-        inner.update_idletasks()
-        canvas.configure(scrollregion=canvas.bbox("all"))
-
-        # ── Divider ──
-        tk.Frame(self.root, bg="#444444", height=1).pack(fill=tk.X)
+        divider = QFrame()
+        divider.setFixedHeight(1)
+        divider.setStyleSheet("background-color: #444444;")
+        layout.addWidget(divider)
 
         # ── Button row ──
-        btn_row = tk.Frame(self.root, bg="#2a2a2a", pady=rescale(8))
-        btn_row.pack(fill=tk.X)
+        btn_row = QFrame()
+        btn_row.setStyleSheet("background-color: #2a2a2a;")
+        btn_layout = QHBoxLayout(btn_row)
+        btn_layout.setContentsMargins(_P, 8, _P, 8)
 
-        tk.Button(
-            btn_row,
-            text="Deselect All",
-            font=("Segoe UI", 9),
-            bg="#2a2a2a", fg="#aaaaaa",
-            activebackground="#3a3a3a", activeforeground="#ffffff",
-            bd=0, padx=rescale(12), pady=rescale(5),
-            cursor="hand2",
-            command=self._deselect_all,
-        ).pack(side=tk.LEFT, padx=(_P, rescale(4)))
+        deselect_btn = QPushButton("Deselect All")
+        deselect_btn.setCursor(Qt.PointingHandCursor)
+        deselect_btn.setStyleSheet(self._secondary_btn_style())
+        deselect_btn.clicked.connect(self._deselect_all)
+        btn_layout.addWidget(deselect_btn)
 
-        tk.Button(
-            btn_row,
-            text="Select All New",
-            font=("Segoe UI", 9),
-            bg="#2a2a2a", fg="#aaaaaa",
-            activebackground="#3a3a3a", activeforeground="#ffffff",
-            bd=0, padx=rescale(12), pady=rescale(5),
-            cursor="hand2",
-            command=self._select_all_new,
-        ).pack(side=tk.LEFT, padx=rescale(4))
+        select_new_btn = QPushButton("Select All New")
+        select_new_btn.setCursor(Qt.PointingHandCursor)
+        select_new_btn.setStyleSheet(self._secondary_btn_style())
+        select_new_btn.clicked.connect(self._select_all_new)
+        btn_layout.addWidget(select_new_btn)
 
-        self._mine_btn = tk.Button(
-            btn_row,
-            text=f"Mine Selected  ({new_count})",
-            font=("Segoe UI", 9, "bold"),
-            bg="#1a3a1a", fg="#6bff6b",
-            activebackground="#2a4a2a", activeforeground="#6bff6b",
-            bd=0, padx=rescale(14), pady=rescale(5),
-            cursor="hand2",
-            command=self._confirm,
-        )
-        self._mine_btn.pack(side=tk.RIGHT, padx=(_P, _P))
+        btn_layout.addStretch(1)
 
-    def _build_row(
-        self,
-        parent: tk.Frame,
-        entry:  WordEntry,
-        var:    tk.BooleanVar,
-        index:  int,
-    ):
-        # Colour constants — match CardToast green/red in notifier.py
-        _BG_SEL   = "#1a3a1a";  _FG_SEL   = "#6bff6b";  _SFG_SEL   = "#4aaa4a"
-        _BG_UNSEL = "#3a1a1a";  _FG_UNSEL = "#ff6b6b";  _SFG_UNSEL = "#aa4a4a"
-        _BG_MINED = "#1e2a1e";  _FG_MINED = "#4a8a4a";  _SFG_MINED = "#3a6a3a"
+        self._mine_btn = QPushButton(f"Mine Selected  ({new_count})")
+        self._mine_btn.setCursor(Qt.PointingHandCursor)
+        self._mine_btn.setStyleSheet("""
+            QPushButton { background-color: #1a3a1a; color: #6bff6b; border: none;
+                          padding: 5px 14px; font-size: 11px; font-weight: bold; }
+            QPushButton:hover { background-color: #2a4a2a; }
+        """)
+        self._mine_btn.clicked.connect(self._confirm)
+        btn_layout.addWidget(self._mine_btn)
 
-        row = tk.Frame(parent, height=_ROW_H)
-        row.pack(fill=tk.X)
-        row.pack_propagate(False)
+        layout.addWidget(btn_row)
 
-        # Tick — rendered as a label so we fully own the visual state.
-        tick_lbl = tk.Label(row, font=("Segoe UI", 11), width=2, anchor="center",
-                            cursor="arrow" if entry.is_mined else "hand2")
-        tick_lbl.pack(side=tk.LEFT, padx=(rescale(8), 0))
-
-        lbl_surface = tk.Label(row, text=entry.display_surface,
-                               font=("Segoe UI", 11), width=6, anchor="w")
-        lbl_surface.pack(side=tk.LEFT, padx=(rescale(4), 0))
-
-        lbl_reading = tk.Label(row, text=entry.display_reading,
-                               font=("Segoe UI", 9), width=10, anchor="w")
-        lbl_reading.pack(side=tk.LEFT, padx=rescale(4))
-
-        lbl_pos = None
-        if entry.display_pos:
-            lbl_pos = tk.Label(row, text=entry.display_pos[:6],
-                               font=("Segoe UI", 7), fg="#aaaaaa",
-                               padx=rescale(4), pady=rescale(1))
-            lbl_pos.pack(side=tk.LEFT, padx=rescale(2))
-
-        lbl_meaning = tk.Label(row, text=entry.display_meaning,
-                               font=("Segoe UI", 8), anchor="w",
-                               wraplength=rescale(180), justify=tk.LEFT)
-        lbl_meaning.pack(side=tk.LEFT, padx=rescale(6), fill=tk.X, expand=True)
-
-        if entry.is_mined:
-            tk.Label(row, text="✓ mined", font=("Segoe UI", 7, "bold"),
-                     bg="#1a2a1a", fg="#4a8a4a",
-                     padx=rescale(5), pady=rescale(2),
-                     ).pack(side=tk.RIGHT, padx=(_P, rescale(8)))
-
-        def _refresh(*_):
-            if entry.is_mined:
-                bg, fg, sfg, tick = _BG_MINED, _FG_MINED, _SFG_MINED, "✓"
-            elif var.get():
-                bg, fg, sfg, tick = _BG_SEL,   _FG_SEL,   _SFG_SEL,   "☑"
-            else:
-                bg, fg, sfg, tick = _BG_UNSEL,  _FG_UNSEL,  _SFG_UNSEL,  "☐"
-            row.configure(bg=bg)
-            tick_lbl.configure(bg=bg, fg=fg,  text=tick)
-            lbl_surface.configure(bg=bg, fg=fg)
-            lbl_reading.configure(bg=bg, fg=sfg)
-            lbl_meaning.configure(bg=bg, fg=sfg)
-            if lbl_pos:
-                lbl_pos.configure(bg=bg)
-
-        _refresh()
-        var.trace_add("write", _refresh)
-
-        if not entry.is_mined:
-            def _toggle(_e, v=var): v.set(not v.get())
-            row.bind("<Button-1>", _toggle)
-            for child in row.winfo_children():
-                child.bind("<Button-1>", _toggle)
+    @staticmethod
+    def _secondary_btn_style() -> str:
+        return """
+            QPushButton { background-color: #2a2a2a; color: #aaaaaa; border: none;
+                          padding: 5px 12px; font-size: 10px; }
+            QPushButton:hover { background-color: #3a3a3a; color: #ffffff; }
+        """
 
     # ── Button actions ────────────────────────────────────────────────────────
 
-    def _deselect_all(self):
-        for var in self._vars:
-            var.set(False)
+    def _deselect_all(self) -> None:
+        for row in self._rows:
+            if not row.entry.is_mined:
+                row.entry.selected = False
+                row._refresh()
         self._update_mine_button()
 
-    def _select_all_new(self):
-        for var, entry in zip(self._vars, self.entries):
-            if not entry.is_mined:
-                var.set(True)
+    def _select_all_new(self) -> None:
+        for row in self._rows:
+            if not row.entry.is_mined:
+                row.entry.selected = True
+                row._refresh()
         self._update_mine_button()
 
-    def _update_mine_button(self, *_):
-        if self._mine_btn:
-            count = sum(v.get() for v in self._vars)
-            self._mine_btn.configure(text=f"Mine Selected  ({count})")
+    def _update_mine_button(self) -> None:
+        count = sum(1 for e in self.entries if e.selected and not e.is_mined)
+        self._mine_btn.setText(f"Mine Selected  ({count})")
 
     # ── Close actions ─────────────────────────────────────────────────────────
 
-    def _confirm(self):
-        selected = [
-            entry for entry, var in zip(self.entries, self._vars)
-            if var.get() and not entry.is_mined
-        ]
+    def _confirm(self) -> None:
+        selected = [e for e in self.entries if e.selected and not e.is_mined]
         self._finish(selected)
 
-    def _on_window_close(self):
-        """User closed the window via the X button — treat as empty selection."""
-        self._finish([])
+    def closeEvent(self, event) -> None:
+        if hasattr(self, "_hotkey_timer"):
+            self._hotkey_timer.stop()
 
-    def _finish(self, selected: List[WordEntry]):
-        """
-        Common exit path for confirm and close.
-        Sets running=False (which exits show()'s loop), destroys the window,
-        then dispatches on_confirm to a background thread.
+        from core import audio_recorder
+        if audio_recorder.is_recording():
+            audio_recorder.cancel_recording()
+        if self._on_confirm is not None:
+            self._finish([])
+        event.accept()
 
-        The callback must NOT run on the main thread: it calls
-        _run_card_flow(blocking=True), which posts card toasts to the
-        main_thread_queue and then blocks waiting for them to resolve.
-        If it ran on the main thread the queue would never be pumped,
-        the toasts would never appear, and the wait would time out.
-        """
-        import threading
-        self.running = False
-        cb = self.on_confirm
-        self.on_confirm = None   # prevent double-invocation
-        self._close()
+    def _finish(self, selected: List[WordEntry]) -> None:
+        cb = self._on_confirm
+        self._on_confirm = None   # prevent double-invocation (confirm + closeEvent)
+        self.close()
         if cb:
             threading.Thread(target=cb, args=(selected,), daemon=True).start()
-
-    def _close(self):
-        try:
-            self.root.destroy()
-        except Exception:
-            pass
 
 
 # ─── Public API ───────────────────────────────────────────────────────────────
 
 def show_word_selector(
-    entries:          List[WordEntry],
-    main_thread_queue,
-    on_confirm:       Callable[[List[WordEntry]], None],
-):
-    """
-    Posts the WordSelectorUI to the main thread queue.
-    Behaves identically to show_card_toast() — blocking on the main thread
-    while the window is visible, returning after the user confirms or closes.
+    entries:    List[WordEntry],
+    main_thread_queue,   # unused, kept for call-site compatibility
+    on_confirm: Callable[[List[WordEntry]], None],
+    settings=None,       # needed for the sentence-audio record hotkey
+) -> None:
+    if not entries:
+        print("[Selector] No entries — skipping.")
+        on_confirm([])
+        return
+    signals.show_word_selector.emit(entries, on_confirm, settings)
 
-    Args:
-        entries:           List of WordEntry from _build_word_entries().
-        main_thread_queue: queue.Queue owned by main.py.
-        on_confirm:        Called with the list of checked WordEntry objects.
-                           Called with [] if the window is closed without confirming.
-    """
-    def _show():
-        if not entries:
-            print("[Selector] No entries — skipping.")
-            on_confirm([])
-            return
-        ui = WordSelectorUI(entries, on_confirm=on_confirm)
-        ui.show()   # blocks until user confirms or closes (same as CardToast)
 
-    main_thread_queue.put(_show)
+def _on_show_word_selector(entries, on_confirm, settings) -> None:
+    WordSelectorWindow(entries, on_confirm, settings)
+
+
+def connect_word_selector_signal() -> None:
+    signals.show_word_selector.connect(_on_show_word_selector)

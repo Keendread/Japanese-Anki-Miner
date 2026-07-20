@@ -1,7 +1,3 @@
-# Module for Anki Integration
-# Automatically create cards
-# AnkiConnect API calls
-
 import os
 import json
 import sqlite3
@@ -55,14 +51,6 @@ def _get_mined_conn() -> sqlite3.Connection:
     return _mined_conn
 
 def is_already_mined(dictionary_form: str, reading: str) -> bool:
-    """
-    Returns True if the word has already been mined.
-    Checks local mined.db - much faster than querying AnkiConnect.
-
-    Args:
-        dictionary_form (str): base form of the word
-        reading (str):         hiragana reading
-    """
     try:
         conn = _get_mined_conn()
         with _mined_conn_lock:
@@ -76,7 +64,6 @@ def is_already_mined(dictionary_form: str, reading: str) -> bool:
         return False
     
 def _record_mined(dictionary_form: str, reading: str, note_id: Optional[int]) -> None:
-    """Records the word as mined in the local DB."""
     try:
         conn = _get_mined_conn()
         with _mined_conn_lock:
@@ -96,14 +83,6 @@ def _record_mined(dictionary_form: str, reading: str, note_id: Optional[int]) ->
         print(f"[Anki] Failed to record mined word: {e}")
         
 def sync_mined_from_anki(deck_name: str) -> None:
-    """
-    Pulls existing note expressions from AnkiConnect and records them
-    in mined.db so duplicates are detected even for cards made by Yomitan.
-    Called once at startup (non-fatal if Anki is not open).
-
-    Args:
-        deck_name (str): Anki deck name to sync from
-    """
     try:
         note_ids = _ankiconnect("findNotes", query=f'deck:"{deck_name}"')
         if not note_ids:
@@ -132,14 +111,6 @@ def sync_mined_from_anki(deck_name: str) -> None:
         
 
 def _ankiconnect(action: str, **params: Any) -> Any:
-    """
-    Sends a request to AnkiConnect and returns the result.
-    Raises RuntimeError on failure.
-
-    Args:
-        action (str): AnkiConnect action string
-        **params:     action parameters
-    """
     payload = json.dumps({
         "action":  action,
         "version": ANKICONNECT_VER,
@@ -167,7 +138,6 @@ def _ankiconnect(action: str, **params: Any) -> Any:
     return data.get("result")
 
 def is_anki_connect_available() -> bool:
-    """Quick check whether AnkiConnect is reachable."""
     try:
         _ankiconnect("version")
         return True
@@ -178,18 +148,6 @@ def is_anki_connect_available() -> bool:
 
 
 def add_card(card: Card, settings: Dict[str, Any], image_filename: Optional[str] = None) -> Tuple[bool, str, Optional[int]]:
-    """
-    Creates an Anki card from a Card object.
-    Records the word in mined.db on success.
-
-    Args:
-        card: Card object with formatted content ready for Anki
-        settings: Settings dictionary with anki_deck, anki_note_type, etc.
-        image_filename: Optional media filename for downloaded/selected image
-
-    Returns:
-        Tuple of (success: bool, message: str, note_id: Optional[int])
-    """
     if not card.is_valid():
         return False, f"Card validation failed for '{card.source_word.surface}'", None
     
@@ -282,14 +240,6 @@ def add_card(card: Card, settings: Dict[str, Any], image_filename: Optional[str]
         return False, str(e), None
     
 def update_card_audio(note_id: int, audio_file: AudioFile) -> None:
-    """
-    Updates an existing Anki note with audio after the fact.
-    Called asynchronously after card creation since audio may take time.
-
-    Args:
-        note_id: Anki note ID to update
-        audio_file: AudioFile object with paths to word and sentence audio
-    """
     try:
         fields = {}
 
@@ -304,13 +254,16 @@ def update_card_audio(note_id: int, audio_file: AudioFile) -> None:
         else:
             print(f"[Anki] Word audio file not found: {audio_file.word_audio}")
 
-        # Sentence audio (optional)
-        if audio_file.sentence_audio and os.path.exists(audio_file.sentence_audio):
-            with open(audio_file.sentence_audio, "rb") as f:
-                data = base64.b64encode(f.read()).decode()
-            media_filename = os.path.basename(audio_file.sentence_audio)
-            _ankiconnect("storeMediaFile", filename=media_filename, data=data)
-            fields["SentenceAudio"] = f"[sound:{media_filename}]"
+        if audio_file.sentence_audio:
+            if os.path.exists(audio_file.sentence_audio):
+                with open(audio_file.sentence_audio, "rb") as f:
+                    data = base64.b64encode(f.read()).decode()
+                media_filename = os.path.basename(audio_file.sentence_audio)
+                _ankiconnect("storeMediaFile", filename=media_filename, data=data)
+                fields["SentenceAudio"] = f"[sound:{media_filename}]"
+            else:
+                # Already uploaded elsewhere, just reference it.
+                fields["SentenceAudio"] = f"[sound:{audio_file.sentence_audio}]"
 
         if not fields:
             print(f"[Anki] No valid audio files to update for note {note_id}.")
@@ -319,7 +272,6 @@ def update_card_audio(note_id: int, audio_file: AudioFile) -> None:
         _ankiconnect("updateNoteFields", note={"id": note_id, "fields": fields})
         print(f"[Anki] Updated note {note_id} with audio.")
 
-        # Remove after saving to Anki to avoid cluttering local storage. Anki manages its own media folder.
         if (os.path.exists(audio_file.word_audio)):
             os.remove(audio_file.word_audio)
         if (audio_file.sentence_audio and os.path.exists(audio_file.sentence_audio)):

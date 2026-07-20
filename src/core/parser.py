@@ -1,7 +1,6 @@
-# Module for NLP and tokenizing sentences
-
 import threading
 from typing import Any, Optional
+import joyokanji
 from sudachipy import tokenizer, dictionary
 from src.models.word import Word
 
@@ -10,9 +9,13 @@ _parser_ready: threading.Event = threading.Event()
 _tokenizer: Optional[Any] = None
 _tokenizer_lock: threading.Lock = __import__("threading").Lock()
 
+def normalize_kanji(text: str) -> str:
+    if not text:
+        return text
+    return joyokanji.convert(text, variants=True)
+
 
 def get_tokenizer() -> Any:
-    """Returns the shared global SudachiPy tokenizer, loaded on the first call"""
     global _tokenizer
     with _tokenizer_lock:
         if _tokenizer is None:
@@ -29,21 +32,10 @@ def get_tokenizer() -> Any:
     return _tokenizer
 
 def tokenize(text: str) -> list[Any]:
-    """
-    Splits a Japanese string into morpheme tokens using SudachiPy.
-
-    Args:
-        text: Japanese string from text extracted by ocr.py
-
-    Returns:
-        List of SudachiPy morpheme objects with:
-        - surface(): how it appears in the text
-        - dictionary_form(): base/dictionary form
-        - reading_form(): hiragana reading
-        - part_of_speech(): tuple of POS tags
-    """
     if not text or not text.strip():
         return []
+
+    text = normalize_kanji(text)
 
     try:
         t = get_tokenizer()
@@ -53,17 +45,6 @@ def tokenize(text: str) -> list[Any]:
         return []
     
 def identify_target(morphemes: list[Any], cursor_offset: int = 0) -> Optional[Any]:
-    """
-    Identifies the target word from a list of morphemes.
-    Returns the one at the cursor's position, or the first content word (skips particles).
-
-    Args:
-        morphemes: List of SudachiPy morphemes from tokenize()
-        cursor_offset: Character index where cursor was positioned (default: 0)
-
-    Returns:
-        Target SudachiPy morpheme object, or None if nothing found
-    """
     if not morphemes:
         return None
 
@@ -91,18 +72,6 @@ def identify_target(morphemes: list[Any], cursor_offset: int = 0) -> Optional[An
     return morphemes[0]
 
 def build_sentence_furigana(morphemes: list[Any]) -> str:
-    """
-    Builds a SentenceFurigana string in Lapis format.
-    Kanji-containing tokens become word[reading], kana-only tokens are plain.
-    
-    Example output: "完全[かんぜん]なる 空[くう]"
-
-    Args:
-        morphemes: List of SudachiPy morphemes
-
-    Returns:
-        Furigana-annotated sentence string
-    """
     import re
     kanji_re = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]")
     parts: list[Any] = []
@@ -119,24 +88,12 @@ def build_sentence_furigana(morphemes: list[Any]) -> str:
     return "".join(parts)
 
 def _kata_to_hira(text: str) -> str:
-    """Converts katakana to hiragana."""
     return "".join(
         chr(ord(c) - 0x60) if "ァ" <= c <= "ン" else c
         for c in text
     )
 
 def parse(text: str, cursor_offset: int = 0) -> Optional[dict[str, Any]]:
-    """
-    Main entry point for parser module.
-    Converts OCR text to a parsed word dictionary.
-
-    Args:
-        text: Raw extracted Japanese string from OCR
-        cursor_offset: Character position of cursor within the string (default: 0)
-
-    Returns:
-        Dictionary with word data (surface, dictionary_form, reading, pos, sentence), or None if parsing fails
-    """
     morphemes = tokenize(text)
     if not morphemes:
         print("[Parser] No morphemes found.")
@@ -164,7 +121,6 @@ def parse(text: str, cursor_offset: int = 0) -> Optional[dict[str, Any]]:
     return result
 
 def to_word_object(parse_result: dict[str, Any]) -> Word:
-    """Converts a parse result dict to a Word dataclass object."""
     return Word(
         surface=parse_result.get("surface", ""),
         dictionary_form=parse_result.get("dictionary_form", ""),

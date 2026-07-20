@@ -1,137 +1,159 @@
-# Module for the Optical Character Recognition capability of the application
-# Primarily uses MangaOCR but you can add fallback OCR models
-# Feeds into parser.py
+import asyncio
+import logging
+import threading
+from typing import Any, List
 
 from PIL import Image
-import threading
-import time
-import logging
-import warnings
-from typing import Any
-import numpy as np
 
-_ocr_model: Any = None
-_model_lock: threading.Lock = threading.Lock()
+from core.detector import TextRegion
+
 _model_ready: threading.Event = threading.Event()
+_lens_lock:   threading.Lock  = threading.Lock()
+_lens_api:    Any             = None
 
-def _loading_spinner(stop_event: threading.Event):
-    """
-    Prints elapsed seconds on the same line while model loads.
 
-    Args:
-        stop_event (threading.Event): Function that sets the stopping condition
-    """
-    start = time.time()
-    while not stop_event.is_set():
-        elapsed = time.time() - start
-        print(f"\r[OCR] Loading model... {elapsed:.1f}s", end="", flush=True)
-        time.sleep(0.1)
-    
-    elapsed = time.time() - start
-    print(f"\r[OCR] Model loaded in {elapsed:.1f}s")
-
-def preprocess(image: Image.Image) -> Image.Image:
-    """
-    Preprocess captured image before OCR.
-
-    Args:
-        image (Image.Image): Image from capture.py
-
-    Returns:
-        Image.Image: Preprocessed image
-    """
-    import cv2
-
-    if image.mode != "RGB":
-        image = image.convert("RGB")
-
-    gray = np.array(image.convert("L"))
-    mean_brightness = gray.mean()
-
-    # Determine binarization direction based on background brightness
-    if mean_brightness < 128:
-        # Dark background, bright text → threshold to white text on black
-        thresh_val = max(int(np.percentile(gray, 85)), 80)
-        _, bw = cv2.threshold(gray, thresh_val, 255, cv2.THRESH_BINARY)
-    else:
-        # Light background, dark text → invert so text becomes white on black
-        _, bw = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-
-    # If binarization produced almost nothing (wrong polarity), flip it
-    white_pct = np.sum(bw == 255) / bw.size
-    if white_pct < 0.02 or white_pct > 0.95:
-        bw = cv2.bitwise_not(bw)
-        
-    close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, close_kernel)
-
-    image = Image.fromarray(bw).convert("RGB")
-
-    # Now upscale with NEAREST — crisp edges on binary, no halo artifacts
-    w, h = image.size
-    TARGET_H = 64
-    TARGET_W = 64
-    scale = max(
-        TARGET_H / h if h < TARGET_H else 1.0,
-        TARGET_W / w if w < TARGET_W else 1.0,
-    )
-    if scale > 1.0:
-        image = image.resize((int(w * scale), int(h * scale)), Image.NEAREST)
-
-    return image
+# ── Initialisation ────────────────────────────────────────────────────────────
 
 def get_model() -> Any:
-    global _ocr_model
-    with _model_lock:
-        if _ocr_model is None:
+    global _lens_api
+    with _lens_lock:
+        if _lens_api is None:
             try:
-                from manga_ocr import MangaOcr
-                import sys
-
-                logging.getLogger("manga_ocr").setLevel(logging.ERROR)
-                warnings.filterwarnings("ignore")
-                
-                import io
-                if sys.stdout is None:
-                    sys.stdout = io.StringIO()
-                if sys.stderr is None:
-                    sys.stderr = io.StringIO()
-
-                stop_spinner = threading.Event()
-                spinner = threading.Thread(target=_loading_spinner, args=(stop_spinner,), daemon=True)
-                spinner.start()
-
-                _ocr_model = MangaOcr()
-
-                stop_spinner.set()
-                spinner.join()
-
-                warnings.filterwarnings("default")
-                _model_ready.set()
-                logging.info("[OCR] Model loaded successfully.")
-
+                from chrome_lens_py import LensAPI
+                _lens_api = LensAPI()
+                logging.info("[OCR] LensAPI initialised.")
             except Exception as e:
-                logging.exception(f"[OCR] Model failed to load: {e}")
-                _model_ready.set()  # unblock the toast even on failure
-                warnings.filterwarnings("default")
+                logging.exception(f"[OCR] LensAPI failed to initialise: {e}")
+        _model_ready.set()   # always unblock the toast, even on failure
+    return _lens_api
 
-    return _ocr_model
+
+def _run_lens(image: Image.Image, output_format: str = "full_text",
+              target_translation_language: str = None) -> dict:
+    api = get_model()
+    if api is None:
+        return {}
+
+    async def _call():
+        return await api.process_image(
+            image_path=image,
+            ocr_language="ja",
+            output_format=output_format,
+            target_translation_language=target_translation_language,
+        )
+
+    return asyncio.run(_call())
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
 
 def extract_text(image: Image.Image) -> str:
-    """
-    Runs MangaOCR on a PIL Image and returns the extracted Japanese text.
-
-    Args:
-        image (Image.Image): Image from capture.py
-
-    Returns:
-        str: Japanese text for Natural Language Processing
-    """
     try:
-        model = get_model()
-        # processed = preprocess(image)
-        text = model(image)
-        return text.strip()
+        result = _run_lens(image, output_format="full_text")
+        text   = result.get("ocr_text", "") or ""
+        text   = text.strip()
+        logging.info(f"[OCR] extract_text: '{text[:80]}'")
+        return text
     except Exception as e:
+        logging.error(f"[OCR] extract_text failed: {e}", exc_info=True)
         print(f"[OCR] Extraction failed: {e}")
         return ""
+
+
+def extract_blocks(image: Image.Image) -> list[TextRegion]:
+    try:
+        result = _run_lens(image, output_format="blocks")
+        blocks = result.get("text_blocks", [])
+
+        if not blocks:
+            logging.warning("[OCR] extract_blocks: no blocks returned, falling back to full-image text")
+            text = result.get("ocr_text", "").strip()
+            w, h = image.size
+            return [TextRegion(x=0, y=0, w=w, h=h, text=text)] if text else []
+
+        regions: list[TextRegion] = []
+        img_w, img_h = image.size
+
+        for block in blocks:
+            text = block.get("text", "").strip()
+            if not text:
+                continue
+
+            # Lens geometry is normalised 0.0–1.0 relative to image dimensions
+            geo = block.get("geometry", {})
+            if geo:
+                cx = geo.get("center_x", 0.5)
+                cy = geo.get("center_y", 0.5)
+                bw = geo.get("width",    0.5)
+                bh = geo.get("height",   0.5)
+                x  = int((cx - bw / 2) * img_w)
+                y  = int((cy - bh / 2) * img_h)
+                w  = int(bw * img_w)
+                h  = int(bh * img_h)
+                # Clamp to image bounds
+                x  = max(0, min(x, img_w - 1))
+                y  = max(0, min(y, img_h - 1))
+                w  = max(1, min(w, img_w - x))
+                h  = max(1, min(h, img_h - y))
+            else:
+                # No geometry — span full width, stack vertically
+                x, y = 0, len(regions) * 30
+                w, h = img_w, 28
+
+            regions.append(TextRegion(x=x, y=y, w=w, h=h, text=text))
+            logging.debug(f"[OCR] Block: '{text[:60]}' @ ({x},{y},{w},{h})")
+
+        # Sort: top-to-bottom, then left-to-right (horizontal reading order)
+        regions.sort(key=lambda r: (r.y, r.x))
+        logging.info(f"[OCR] extract_blocks: {len(regions)} block(s)")
+        return regions
+
+    except Exception as e:
+        logging.error(f"[OCR] extract_blocks failed: {e}", exc_info=True)
+        print(f"[OCR] Block extraction failed: {e}")
+        # Fallback: return full-image as one region
+        text = extract_text(image)
+        w, h = image.size
+        return [TextRegion(x=0, y=0, w=w, h=h, text=text)] if text else []
+
+
+def translate_blocks(
+    image: Image.Image,
+    regions: List[TextRegion],
+    target_lang: str = "en",
+) -> None:
+    if not regions:
+        return
+
+    api = get_model()
+    if api is None:
+        logging.warning("[OCR] translate_blocks: Lens unavailable, skipping")
+        return
+
+    crops = [region.crop_from(image, pad=2) for region in regions]
+
+    async def _translate_one(region: TextRegion, crop: Image.Image) -> None:
+        try:
+            result = await api.process_image(
+                image_path=crop,
+                ocr_language="ja",
+                output_format="full_text",
+                target_translation_language=target_lang,
+            )
+            translation = (result.get("translated_text") or "").strip()
+            region.translation = translation
+            logging.debug(f"[OCR] Translated '{region.text[:30]}' -> '{translation[:30]}'")
+        except Exception as e:
+            logging.error(f"[OCR] Block translation failed for '{region.text[:30]}': {e}")
+            region.translation = ""
+
+    async def _translate_all():
+        await asyncio.gather(
+            *(_translate_one(r, c) for r, c in zip(regions, crops))
+        )
+
+    try:
+        asyncio.run(_translate_all())
+        print(f"[OCR] Translated {len(regions)} block(s)")
+    except Exception as e:
+        logging.error(f"[OCR] translate_blocks batch failed: {e}", exc_info=True)
