@@ -5,6 +5,7 @@ import threading
 import urllib.request
 import urllib.error
 import base64
+from contextlib import closing
 
 from datetime import datetime
 from typing import Optional, Dict, List, Any, Tuple
@@ -17,12 +18,14 @@ def _get_data_dir() -> str:
     root_dir: str = os.path.dirname(src_dir)                   # project root
     return os.path.join(root_dir, "data")
 
-MINED_DB_PATH: str = os.path.join(_get_data_dir(), "mined.db")
+MINED_DB_PATH: str = os.path.join(_get_data_dir(), "mined_words.db")
+_LEGACY_MINED_DB_PATH: str = os.path.join(_get_data_dir(), "mined.db")
 ANKICONNECT_URL: str = "http://localhost:8765"
 ANKICONNECT_VER: int = 6
 
 _mined_conn: Optional[sqlite3.Connection] = None
 _mined_conn_lock: threading.Lock = threading.Lock()
+_anki_sync_lock: threading.Lock = threading.Lock()
 
 _MINED_SCHEMA = """
 CREATE TABLE IF NOT EXISTS mined_words (
@@ -34,6 +37,10 @@ CREATE TABLE IF NOT EXISTS mined_words (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_mined_word
     ON mined_words(dictionary_form, reading);
+CREATE TABLE IF NOT EXISTS mined_sync_metadata (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 def _get_mined_conn() -> sqlite3.Connection:
@@ -46,6 +53,22 @@ def _get_mined_conn() -> sqlite3.Connection:
             _mined_conn = sqlite3.connect(db_path, check_same_thread=False)
             _mined_conn.row_factory = sqlite3.Row
             _mined_conn.executescript(_MINED_SCHEMA)
+            if os.path.isfile(_LEGACY_MINED_DB_PATH):
+                with closing(sqlite3.connect(_LEGACY_MINED_DB_PATH)) as legacy_conn:
+                    legacy_table = legacy_conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='mined_words'"
+                    ).fetchone()
+                    if legacy_table:
+                        legacy_rows = legacy_conn.execute(
+                            """SELECT dictionary_form, reading, mined_at, anki_note_id
+                               FROM mined_words"""
+                        ).fetchall()
+                        _mined_conn.executemany(
+                            """INSERT OR IGNORE INTO mined_words
+                               (dictionary_form, reading, mined_at, anki_note_id)
+                               VALUES (?, ?, ?, ?)""",
+                            legacy_rows,
+                        )
             _mined_conn.commit()
             print("[Anki] Mined words database ready.")
     return _mined_conn
@@ -82,32 +105,82 @@ def _record_mined(dictionary_form: str, reading: str, note_id: Optional[int]) ->
     except Exception as e:
         print(f"[Anki] Failed to record mined word: {e}")
         
-def sync_mined_from_anki(deck_name: str) -> None:
-    try:
-        note_ids = _ankiconnect("findNotes", query=f'deck:"{deck_name}"')
-        if not note_ids:
-            return
-        
-        notes = _ankiconnect("notesInfo", notes=note_ids)
-        conn = _get_mined_conn()
+def has_completed_initial_sync() -> bool:
+    conn = _get_mined_conn()
+    with _mined_conn_lock:
+        row = conn.execute(
+            "SELECT value FROM mined_sync_metadata WHERE key='initial_sync_complete'"
+        ).fetchone()
+    return row is not None and row["value"] == "1"
 
-        with _mined_conn_lock:
+def sync_mined_from_anki(rebuild: bool = False) -> bool:
+    try:
+        with _anki_sync_lock:
+            conn = _get_mined_conn()
+            deck_names = _ankiconnect("deckNames")
+            if not isinstance(deck_names, list) or not all(
+                isinstance(name, str) for name in deck_names
+            ):
+                raise RuntimeError("AnkiConnect did not return valid deck names.")
+
+            note_ids = set()
+            for deck_name in deck_names:
+                deck_note_ids = _ankiconnect(
+                    "findNotes",
+                    query=f'deck:"{deck_name}"'
+                ) or []
+                if not isinstance(deck_note_ids, list):
+                    raise RuntimeError(
+                        f"AnkiConnect returned invalid note IDs for '{deck_name}'."
+                    )
+                note_ids.update(deck_note_ids)
+
+            notes = []
+            note_id_list = sorted(note_ids)
+            for offset in range(0, len(note_id_list), 500):
+                batch = _ankiconnect(
+                    "notesInfo",
+                    notes=note_id_list[offset:offset + 500]
+                )
+                if not isinstance(batch, list):
+                    raise RuntimeError("AnkiConnect returned invalid note information.")
+                notes.extend(batch)
+
+            mined_rows = []
             for note in notes:
                 fields = note.get("fields", {})
                 expr = fields.get("Expression", {}).get("value", "")
                 reading = fields.get("ExpressionReading", {}).get("value", "")
                 if expr:
-                    conn.execute(
-                        """INSERT OR IGNORE INTO mined_words
-                           (dictionary_form, reading, mined_at, anki_note_id)
-                           VALUES (?,?,?,?)""",
+                    mined_rows.append(
                         (expr, reading, "synced", note.get("noteId"))
                     )
-            conn.commit()
 
-        print(f"[Anki] Synced {len(notes)} existing cards from '{deck_name}'.")
+            with _mined_conn_lock:
+                if rebuild:
+                    conn.execute(
+                        "DELETE FROM mined_words"
+                    )
+                conn.executemany(
+                    """INSERT OR IGNORE INTO mined_words
+                       (dictionary_form, reading, mined_at, anki_note_id)
+                       VALUES (?, ?, ?, ?)""",
+                    mined_rows,
+                )
+                conn.execute(
+                    """INSERT OR REPLACE INTO mined_sync_metadata (key, value)
+                       VALUES ('initial_sync_complete', '1')"""
+                )
+                conn.commit()
+
+        print(
+            f"[Anki] Synced {len(mined_rows)} mined words from "
+            f"{len(deck_names)} decks."
+        )
+        return True
     except Exception as e:
-        print(f"[Anki] Sync skipped (Anki may not be open): {e}")
+        print(f"[Anki] Full-profile sync failed (Anki may not be open): {e}")
+        return False
         
 
 def _ankiconnect(action: str, **params: Any) -> Any:

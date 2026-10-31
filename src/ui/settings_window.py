@@ -22,6 +22,7 @@ class SettingsWindow(QWidget):
     _record_hotkey_recorded = Signal(object)   # display: str | None
     _save_succeeded          = Signal()
     _save_failed              = Signal(str)
+    _reconstruct_finished    = Signal(bool, str)
 
     def __init__(self, settings, capture=None) -> None:
         super().__init__()
@@ -29,11 +30,13 @@ class SettingsWindow(QWidget):
         self._capture = capture
         self._recording_hotkey = False
         self._recording_record_hotkey = False
+        self._reconstruct_btn = None
 
         self._hotkey_recorded.connect(self._finish_hotkey_recording)
         self._record_hotkey_recorded.connect(self._finish_record_hotkey_recording)
         self._save_succeeded.connect(self._on_save_success)
         self._save_failed.connect(self._on_save_error)
+        self._reconstruct_finished.connect(self._on_reconstruct_finished)
 
         self.setWindowTitle("JAM Settings")
         self.setWindowFlags(Qt.WindowStaysOnTopHint)
@@ -128,6 +131,11 @@ class SettingsWindow(QWidget):
         form.addRow("Anki Profile:", self._profile_edit)
 
         form.addRow(self._separator())
+
+        self._reconstruct_btn = QPushButton("Reconstruct Mined Words Database")
+        self._reconstruct_btn.setCursor(Qt.PointingHandCursor)
+        self._reconstruct_btn.clicked.connect(self._reconstruct_mined_words)
+        form.addRow(self._reconstruct_btn)
 
         note = QLabel("Click the hotkey button, then press and hold your desired key combo.")
         note.setWordWrap(True)
@@ -305,6 +313,43 @@ class SettingsWindow(QWidget):
 
     def _on_save_error(self, message: str) -> None:
         QMessageBox.critical(self, "Error saving settings", message)
+
+    def _reconstruct_mined_words(self) -> None:
+        self._reconstruct_btn.setEnabled(False)
+        self._reconstruct_btn.setText("Reconstructing...")
+
+        def reconstruct() -> None:
+            try:
+                from core.anki import sync_mined_from_anki
+                success = sync_mined_from_anki(rebuild=True)
+                message = (
+                    "Mined words database reconstructed from all Anki decks."
+                    if success else
+                    "Could not reconstruct the database. Check that Anki is open "
+                    "and AnkiConnect is available, then try again."
+                )
+            except Exception as e:
+                logging.error(
+                    f"[Settings] Mined database reconstruction failed: {e}",
+                    exc_info=True,
+                )
+                success = False
+                message = f"Could not reconstruct the mined words database: {e}"
+            self._reconstruct_finished.emit(success, message)
+
+        threading.Thread(
+            target=reconstruct,
+            daemon=True,
+            name="jam-mined-db-reconstruct",
+        ).start()
+
+    def _on_reconstruct_finished(self, success: bool, message: str) -> None:
+        self._reconstruct_btn.setEnabled(True)
+        self._reconstruct_btn.setText("Reconstruct Mined Words Database")
+        if success:
+            QMessageBox.information(self, "JAM Settings", message)
+        else:
+            QMessageBox.warning(self, "Mined Words Database", message)
 
     def _reset_defaults(self) -> None:
         self._mode_combo.setCurrentText(DEFAULT_SETTINGS.get("capture_mode", "bbox"))

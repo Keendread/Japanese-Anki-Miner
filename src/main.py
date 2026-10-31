@@ -86,9 +86,16 @@ def _init_dictionary():
 threading.Thread(target=_init_dictionary, daemon=True).start()
 
 def _sync_anki():
-    deck = settings.get("anki_deck", "Test Deck")
-    log.task_started(f"Anki sync (deck: {deck})")
-    anki.sync_mined_from_anki(deck)
+    if anki.has_completed_initial_sync():
+        log.settings("Initial full-profile Anki sync already completed; skipping.")
+        return
+    log.task_started("Initial Anki full-profile sync")
+    if not anki.sync_mined_from_anki():
+        log.task_warning(
+            "Initial Anki full-profile sync",
+            "Sync failed; it will be retried on the next startup.",
+        )
+        return
     log.task_done("Anki sync")
 
 threading.Thread(target=_sync_anki, daemon=True).start()
