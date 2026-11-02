@@ -15,6 +15,7 @@ from core import anki
 from core import notifier
 from core import audio
 from core import image as image_module
+from core.mined_words_db import normalize_word_identity
 from core.detector import TextRegion
 from src.models.word import Word
 from src.models.card import Card
@@ -91,7 +92,7 @@ def build_word_entries(
     logging.info(f"[Pipeline] Building word entries from {len(ocr_results)} OCR result(s)")
 
     entries: List[WordEntry] = []
-    seen: set = set()
+    seen: set[Tuple[str, str]] = set()
 
     for block_index, (region, text) in enumerate(ocr_results):
         morphemes = parser.tokenize(text)
@@ -119,14 +120,16 @@ def build_word_entries(
 
         for parse_result in morpheme_list:
             dict_form = parse_result.get("dictionary_form", "")
-            if not dict_form or dict_form in seen:
+            reading = parse_result.get("reading", "")
+            identity = normalize_word_identity(dict_form, reading)
+            if not dict_form or identity in seen:
                 continue
-            seen.add(dict_form)
+            seen.add(identity)
 
             word = Word(
                 surface          = parse_result.get("surface", ""),
                 dictionary_form  = dict_form,
-                reading          = parse_result.get("reading", ""),
+                reading          = reading,
                 pos              = parse_result.get("pos", ""),
                 meaning          = None,
                 full_sentence    = parse_result.get("sentence", text),
@@ -144,7 +147,11 @@ def build_word_entries(
                 word.update_from_dictionary(dict_result)
             _finalize_sentence_furigana(word)
 
-            is_mined = anki.is_already_mined(word.dictionary_form, word.reading)
+            is_mined = anki.is_already_mined(
+                word.dictionary_form,
+                word.reading,
+                surface=word.surface,
+            )
             entries.append(WordEntry(
                 word=word, is_mined=is_mined, selected=not is_mined,
                 block_index=block_index, block_text=text,
