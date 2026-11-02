@@ -250,6 +250,19 @@ def update_card_audio(note_id: int, audio_file: AudioFile) -> None:
         os.remove(audio_file.sentence_audio)
 
 
+def update_card_sentence_audio(note_id: int, audio_filename: str) -> None:
+    """Attach a sentence recording that has already been uploaded to Anki."""
+    if not audio_filename:
+        raise ValueError("Sentence audio filename is required.")
+
+    client = _get_ankiconnect_client()
+    client.update_note_fields({
+        "id": note_id,
+        "fields": {"SentenceAudio": f"[sound:{audio_filename}]"},
+    })
+    print(f"[Anki] Updated note {note_id} with recorded sentence audio.")
+
+
 # ── Internal migration helpers ─────────────────────────────────────────────────
 
 def _ankiconnect(action: str, **params: Any) -> Any:

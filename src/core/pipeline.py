@@ -232,6 +232,15 @@ def run_card_flow(
                     logging.info("[Flow] Audio applied")
                 except Exception as e:
                     logging.error(f"[Flow] Audio apply failed: {e}", exc_info=True)
+            elif recorded_path and note_id:
+                try:
+                    anki.update_card_sentence_audio(note_id, recorded_path)
+                    logging.info("[Flow] Recorded sentence audio applied")
+                except Exception as e:
+                    logging.error(
+                        f"[Flow] Recorded sentence audio apply failed: {e}",
+                        exc_info=True,
+                    )
 
         threading.Thread(target=_apply_audio, daemon=True).start()
         done_event.set()
